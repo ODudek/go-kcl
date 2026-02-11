@@ -75,6 +75,9 @@ const (
 	// DefaultMaxRecords Max records to fetch from Kinesis in a single GetRecords call.
 	DefaultMaxRecords = 10000
 
+	// MaxMaxRecords Upper bound for MaxRecords (Kinesis GetRecords API limit).
+	MaxMaxRecords = 10000
+
 	// DefaultIdleTimeBetweenReadsMillis The default value for how long the {@link ShardConsumer}
 	// should sleep if no records are returned from the call to
 	DefaultIdleTimeBetweenReadsMillis = 1000

@@ -164,6 +164,9 @@ func (c *KinesisClientLibConfiguration) WithShardSyncIntervalMillis(shardSyncInt
 
 func (c *KinesisClientLibConfiguration) WithMaxRecords(maxRecords int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("MaxRecords", maxRecords)
+	if maxRecords > MaxMaxRecords {
+		log.Panicf("MaxRecords must not exceed %d (Kinesis API limit), got: %d", MaxMaxRecords, maxRecords)
+	}
 	c.MaxRecords = maxRecords
 	return c
 }
