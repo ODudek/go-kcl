@@ -17,16 +17,13 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package worker
+// Package worker implements the Worker orchestrator for consuming Amazon Kinesis data streams.
+//
+// The Worker coordinates shard discovery, lease management, and record processing.
+// It spins up goroutine-based consumers for each assigned shard using either polling
+// (GetRecords API) or enhanced fan-out (SubscribeToShard API) strategies.
+//
 // The implementation is derived from https://github.com/patrobinson/gokini
-//
-// Copyright 2018 Patrick robinson.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 package worker
 
 import (
@@ -94,20 +91,22 @@ func NewWorker(factory kcl.IRecordProcessorFactory, kclConfig *config.KinesisCli
 	}
 }
 
-// WithKinesis is used to provide Kinesis service for either custom implementation or unit testing.
+// WithKinesis provides a custom Kinesis service client for testing or alternative configurations.
+// Returns the Worker for method chaining.
 func (w *Worker) WithKinesis(svc *kinesis.Client) *Worker {
 	w.kc = svc
 	return w
 }
 
-// WithCheckpointer is used to provide a custom checkpointer service for non-dynamodb implementation
-// or unit testing.
+// WithCheckpointer provides a custom checkpointer implementation (e.g. Redis backend or test mock).
+// If not set, a DynamoDB-backed checkpointer is created during Start.
+// Returns the Worker for method chaining.
 func (w *Worker) WithCheckpointer(checker chk.Checkpointer) *Worker {
 	w.checkpointer = checker
 	return w
 }
 
-// Start Run starts consuming data from the stream, and pass it to the application record processors.
+// Start initializes the worker and begins consuming data from the stream.
 func (w *Worker) Start() error {
 	log := w.kclConfig.Logger
 	if err := w.initialize(); err != nil {

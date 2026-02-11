@@ -17,23 +17,11 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package config
-// The implementation is derived from https://github.com/awslabs/amazon-kinesis-client
-/*
- * Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
- *
- * Licensed under the Amazon Software License (the "License").
- * You may not use this file except in compliance with the License.
- * A copy of the License is located at
- *
- * http://aws.amazon.com/asl/
- *
- * or in the "license" file accompanying this file. This file is distributed
- * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language governing
- * permissions and limitations under the License.
- */
-
+// Package config provides configuration types and builder methods for the Kinesis Client Library.
+//
+// The main type is KinesisClientLibConfiguration, which holds all settings for a KCL Worker.
+// Use one of the NewKinesisClientLibConfig* constructors to create a configuration with defaults,
+// then customize with the fluent WithXxx methods.
 package config
 
 import (
@@ -307,6 +295,8 @@ var positionMap = map[InitialPositionInStream]*string{
 	AT_TIMESTAMP: aws.String("AT_TIMESTAMP"),
 }
 
+// InitalPositionInStreamToShardIteratorType converts an InitialPositionInStream value
+// to the corresponding Kinesis ShardIteratorType string ("LATEST", "TRIM_HORIZON", or "AT_TIMESTAMP").
 func InitalPositionInStreamToShardIteratorType(pos InitialPositionInStream) *string {
 	return positionMap[pos]
 }

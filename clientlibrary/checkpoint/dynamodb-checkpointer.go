@@ -17,16 +17,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package checkpoint
-// The implementation is derived from https://github.com/patrobinson/gokini
-//
-// Copyright 2018 Patrick robinson.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 package checkpoint
 
 import (
@@ -51,7 +41,9 @@ const (
 	NumMaxRetries = 10
 )
 
-// DynamoCheckpoint implements the Checkpoint interface using DynamoDB as a backend
+// DynamoCheckpoint implements the Checkpointer interface using AWS DynamoDB as the backend.
+// It manages lease acquisition via conditional PutItem operations, checkpoint persistence,
+// and optional lease stealing via claim requests.
 type DynamoCheckpoint struct {
 	log                     logger.Logger
 	TableName               string
@@ -65,6 +57,8 @@ type DynamoCheckpoint struct {
 	lastLeaseSync time.Time
 }
 
+// NewDynamoCheckpoint creates a DynamoDB-backed Checkpointer from the given configuration.
+// Call Init to establish the connection and create the lease table if needed.
 func NewDynamoCheckpoint(kclConfig *config.KinesisClientLibConfiguration) *DynamoCheckpoint {
 	checkpointer := &DynamoCheckpoint{
 		log:                     kclConfig.Logger,
@@ -79,13 +73,15 @@ func NewDynamoCheckpoint(kclConfig *config.KinesisClientLibConfiguration) *Dynam
 	return checkpointer
 }
 
-// WithDynamoDB is used to provide DynamoDB service
+// WithDynamoDB sets a custom DynamoDB client (useful for testing with mocks).
+// Returns the receiver for method chaining.
 func (checkpointer *DynamoCheckpoint) WithDynamoDB(svc DynamoDBAPI) *DynamoCheckpoint {
 	checkpointer.svc = svc
 	return checkpointer
 }
 
-// Init initialises the DynamoDB Checkpoint
+// Init establishes a connection to DynamoDB and ensures the lease table exists.
+// If a custom DynamoDB service was set via WithDynamoDB, that service is used.
 func (checkpointer *DynamoCheckpoint) Init() error {
 	checkpointer.log.Infof("Creating DynamoDB session")
 

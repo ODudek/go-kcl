@@ -17,7 +17,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package worker
 package worker
 
 import (
@@ -41,6 +40,8 @@ type shardConsumer interface {
 	getRecords() error
 }
 
+// KinesisSubscriberGetter abstracts the Kinesis API operations required by shard consumers.
+// It enables dependency injection for testing and custom AWS configurations.
 type KinesisSubscriberGetter interface {
 	SubscribeToShard(ctx context.Context, params *kinesis.SubscribeToShardInput, optFns ...func(*kinesis.Options)) (*kinesis.SubscribeToShardOutput, error)
 	GetShardIterator(ctx context.Context, params *kinesis.GetShardIteratorInput, optFns ...func(*kinesis.Options)) (*kinesis.GetShardIteratorOutput, error)

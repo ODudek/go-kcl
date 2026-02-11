@@ -17,16 +17,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package worker
-// The implementation is derived from https://github.com/patrobinson/gokini
-//
-// Copyright 2018 Patrick robinson.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 package worker
 
 import (
@@ -46,16 +36,22 @@ import (
 )
 
 const (
+	// kinesisReadTPSLimit is the maximum GetRecords API calls allowed per second per shard.
 	kinesisReadTPSLimit = 5
-	MaxBytes            = 10000000
-	MaxBytesPerSecond   = 2000000
+	// MaxBytes is the maximum bytes readable in a rate-limit window before enforcing a cool-down.
+	MaxBytes = 10000000
+	// MaxBytesPerSecond is the maximum bytes per second readable from a shard via GetRecords.
+	MaxBytesPerSecond = 2000000
+	// BytesToMbConversion is the conversion factor from bytes to megabytes.
 	BytesToMbConversion = 1000000
 )
 
 var (
-	rateLimitTimeNow    = time.Now
-	rateLimitTimeSince  = time.Since
+	rateLimitTimeNow   = time.Now
+	rateLimitTimeSince = time.Since
+	// errLocalTPSExceeded is returned when the local GetRecords TPS limit is exceeded.
 	errLocalTPSExceeded = errors.New("error GetRecords TPS exceeded")
+	// errMaxBytesExceeded is returned when the max bytes per second limit is exceeded.
 	errMaxBytesExceeded = errors.New("error GetRecords max bytes for call period exceeded")
 )
 

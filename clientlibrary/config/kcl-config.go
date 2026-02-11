@@ -17,23 +17,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package config
-// The implementation is derived from https://github.com/awslabs/amazon-kinesis-client
-/*
- * Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
- *
- * Licensed under the Amazon Software License (the "License").
- * You may not use this file except in compliance with the License.
- * A copy of the License is located at
- *
- * http://aws.amazon.com/asl/
- *
- * or in the "license" file accompanying this file. This file is distributed
- * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language governing
- * permissions and limitations under the License.
- */
-
 package config
 
 import (
@@ -120,48 +103,60 @@ func (c *KinesisClientLibConfiguration) WithDynamoDBEndpoint(dynamoDBEndpoint st
 	return c
 }
 
-// WithTableName to provide alternative lease table in DynamoDB
+// WithTableName sets an alternative DynamoDB/Redis table name for lease management.
+// Defaults to ApplicationName.
 func (c *KinesisClientLibConfiguration) WithTableName(tableName string) *KinesisClientLibConfiguration {
 	c.TableName = tableName
 	return c
 }
 
+// WithInitialPositionInStream sets where to start reading when no checkpoint exists.
+// Valid values: LATEST, TRIM_HORIZON, or AT_TIMESTAMP.
 func (c *KinesisClientLibConfiguration) WithInitialPositionInStream(initialPositionInStream InitialPositionInStream) *KinesisClientLibConfiguration {
 	c.InitialPositionInStream = initialPositionInStream
 	c.InitialPositionInStreamExtended = *newInitialPosition(initialPositionInStream)
 	return c
 }
 
+// WithTimestampAtInitialPositionInStream sets the initial position to AT_TIMESTAMP with the given time.
 func (c *KinesisClientLibConfiguration) WithTimestampAtInitialPositionInStream(timestamp *time.Time) *KinesisClientLibConfiguration {
 	c.InitialPositionInStream = AT_TIMESTAMP
 	c.InitialPositionInStreamExtended = *newInitialPositionAtTimestamp(timestamp)
 	return c
 }
 
+// WithFailoverTimeMillis sets the lease duration in milliseconds. Workers that do not renew
+// their lease within this period will have their shards reassigned. Default: 10000.
 func (c *KinesisClientLibConfiguration) WithFailoverTimeMillis(failoverTimeMillis int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("FailoverTimeMillis", failoverTimeMillis)
 	c.FailoverTimeMillis = failoverTimeMillis
 	return c
 }
 
+// WithLeaseRefreshPeriodMillis sets the period before lease expiry during which the owner
+// will attempt to renew the lease. Default: 5000.
 func (c *KinesisClientLibConfiguration) WithLeaseRefreshPeriodMillis(leaseRefreshPeriodMillis int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("LeaseRefreshPeriodMillis", leaseRefreshPeriodMillis)
 	c.LeaseRefreshPeriodMillis = leaseRefreshPeriodMillis
 	return c
 }
 
+// WithLeaseRefreshWaitTime sets the wait period in milliseconds before an async lease renewal. Default: 2500.
 func (c *KinesisClientLibConfiguration) WithLeaseRefreshWaitTime(leaseRefreshWaitTime int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("LeaseRefreshWaitTime", leaseRefreshWaitTime)
 	c.LeaseRefreshWaitTime = leaseRefreshWaitTime
 	return c
 }
 
+// WithShardSyncIntervalMillis sets the interval in milliseconds between shard sync tasks. Default: 60000.
 func (c *KinesisClientLibConfiguration) WithShardSyncIntervalMillis(shardSyncIntervalMillis int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("ShardSyncIntervalMillis", shardSyncIntervalMillis)
 	c.ShardSyncIntervalMillis = shardSyncIntervalMillis
 	return c
 }
 
+// WithMaxRecords sets the maximum number of records per GetRecords call.
+// The Kinesis API enforces an upper limit of 10000. Default: 10000.
 func (c *KinesisClientLibConfiguration) WithMaxRecords(maxRecords int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("MaxRecords", maxRecords)
 	if maxRecords > MaxMaxRecords {
@@ -179,41 +174,31 @@ func (c *KinesisClientLibConfiguration) WithMaxLeasesForWorker(n int) *KinesisCl
 	return c
 }
 
-// WithIdleTimeBetweenReadsInMillis
-// Controls how long the KCL will sleep if no records are returned from Kinesis
-//
-// <p>
-// This value is only used when no records are returned; if records are returned, the {@link com.amazonaws.services.kinesis.clientlibrary.lib.worker.ProcessTask} will
-// immediately retrieve the next set of records after the call to
-// {@link com.amazonaws.services.kinesis.clientlibrary.interfaces.v2.IRecordProcessor#processRecords(ProcessRecordsInput)}
-// has returned. Setting this value to high may result in the KCL being unable to catch up. If you are changing this
-// value it's recommended that you enable {@link #withCallProcessRecordsEvenForEmptyRecordList(boolean)}, and
-// monitor how far behind the records retrieved are by inspecting
-// {@link com.amazonaws.services.kinesis.clientlibrary.types.ProcessRecordsInput#getMillisBehindLatest()}, and the
-// <a href=
-// "http://docs.aws.amazon.com/streams/latest/dev/monitoring-with-cloudwatch.html#kinesis-metrics-stream">CloudWatch
-// Metric: GetRecords.MillisBehindLatest</a>
-// </p>
-//
-// @param IdleTimeBetweenReadsInMillis: how long to sleep between GetRecords calls when no records are returned.
-// @return KinesisClientLibConfiguration
+// WithIdleTimeBetweenReadsInMillis sets how long the consumer sleeps when no records are returned.
+// This value is only used when no records are returned; when records are present, the next
+// batch is fetched immediately. Setting this too high may cause the consumer to fall behind.
+// Default: 1000.
 func (c *KinesisClientLibConfiguration) WithIdleTimeBetweenReadsInMillis(idleTimeBetweenReadsInMillis int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("IdleTimeBetweenReadsInMillis", idleTimeBetweenReadsInMillis)
 	c.IdleTimeBetweenReadsInMillis = idleTimeBetweenReadsInMillis
 	return c
 }
 
+// WithCallProcessRecordsEvenForEmptyRecordList controls whether ProcessRecords is called
+// even when GetRecords returns no records. Default: false.
 func (c *KinesisClientLibConfiguration) WithCallProcessRecordsEvenForEmptyRecordList(callProcessRecordsEvenForEmptyRecordList bool) *KinesisClientLibConfiguration {
 	c.CallProcessRecordsEvenForEmptyRecordList = callProcessRecordsEvenForEmptyRecordList
 	return c
 }
 
+// WithTaskBackoffTimeMillis sets the backoff time in milliseconds when tasks encounter errors. Default: 500.
 func (c *KinesisClientLibConfiguration) WithTaskBackoffTimeMillis(taskBackoffTimeMillis int) *KinesisClientLibConfiguration {
 	checkIsValuePositive("TaskBackoffTimeMillis", taskBackoffTimeMillis)
 	c.TaskBackoffTimeMillis = taskBackoffTimeMillis
 	return c
 }
 
+// WithLogger sets a custom logger. Panics if nil.
 func (c *KinesisClientLibConfiguration) WithLogger(logger logger.Logger) *KinesisClientLibConfiguration {
 	if logger == nil {
 		log.Panic("Logger cannot be null")
@@ -265,16 +250,19 @@ func (c *KinesisClientLibConfiguration) WithEnhancedFanOutConsumerARN(consumerAR
 	return c
 }
 
+// WithLeaseStealing enables or disables lease stealing for load balancing across workers. Default: false.
 func (c *KinesisClientLibConfiguration) WithLeaseStealing(enableLeaseStealing bool) *KinesisClientLibConfiguration {
 	c.EnableLeaseStealing = enableLeaseStealing
 	return c
 }
 
+// WithLeaseStealingIntervalMillis sets the interval between lease stealing (rebalancing) attempts. Default: 5000.
 func (c *KinesisClientLibConfiguration) WithLeaseStealingIntervalMillis(leaseStealingIntervalMillis int) *KinesisClientLibConfiguration {
 	c.LeaseStealingIntervalMillis = leaseStealingIntervalMillis
 	return c
 }
 
+// WithLeaseSyncingIntervalMillis sets the interval before syncing with the lease table. Default: 60000.
 func (c *KinesisClientLibConfiguration) WithLeaseSyncingIntervalMillis(leaseSyncingIntervalMillis int) *KinesisClientLibConfiguration {
 	c.LeaseSyncingTimeIntervalMillis = leaseSyncingIntervalMillis
 	return c

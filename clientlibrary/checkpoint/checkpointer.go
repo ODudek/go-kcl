@@ -17,16 +17,15 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package checkpoint
+// Package checkpoint provides interfaces and implementations for managing Kinesis
+// shard leases and checkpoint tracking across distributed workers.
+//
+// The Checkpointer interface abstracts the underlying storage backend (DynamoDB, Redis)
+// for persisting shard lease ownership, sequence number checkpoints, and lease
+// claim requests. Implementations provide atomic conditional updates for consistency
+// in a multi-worker environment.
+//
 // The implementation is derived from https://github.com/patrobinson/gokini
-//
-// Copyright 2018 Patrick robinson.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 package checkpoint
 
 import (
@@ -37,20 +36,30 @@ import (
 )
 
 const (
-	LeaseKeyKey       = "ShardID"
-	LeaseOwnerKey     = "AssignedTo"
-	LeaseTimeoutKey   = "LeaseTimeout"
+	// LeaseKeyKey is the field name for the shard ID (primary key).
+	LeaseKeyKey = "ShardID"
+	// LeaseOwnerKey is the field name for the worker that owns the lease.
+	LeaseOwnerKey = "AssignedTo"
+	// LeaseTimeoutKey is the field name for the lease expiration time.
+	LeaseTimeoutKey = "LeaseTimeout"
+	// SequenceNumberKey is the field name for the last checkpointed sequence number.
 	SequenceNumberKey = "Checkpoint"
-	ParentShardIdKey  = "ParentShardId"
-	ClaimRequestKey   = "ClaimRequest"
+	// ParentShardIdKey is the field name for the parent shard ID (resharding).
+	ParentShardIdKey = "ParentShardId"
+	// ClaimRequestKey is the field name for the worker claiming the shard (lease stealing).
+	ClaimRequestKey = "ClaimRequest"
 
-	// ShardEnd We've completely processed all records in this shard.
+	// ShardEnd is the sentinel checkpoint value indicating a shard has been completely
+	// processed and all records delivered.
 	ShardEnd = "SHARD_END"
 
-	// ErrShardClaimed is returned when shard is claimed
+	// ErrShardClaimed is the error message returned when a lease acquisition fails
+	// because another worker has an active claim on the shard.
 	ErrShardClaimed = "shard is already claimed by another node"
 )
 
+// ErrLeaseNotAcquired is returned when a worker cannot acquire a lease on a shard,
+// typically because another worker holds an active lease or a claim request is in progress.
 type ErrLeaseNotAcquired struct {
 	Cause string
 }
@@ -59,33 +68,35 @@ func (e ErrLeaseNotAcquired) Error() string {
 	return fmt.Sprintf("lease not acquired: %s", e.Cause)
 }
 
-// Checkpointer handles checkpointing when a record has been processed
+// Checkpointer manages shard lease acquisition, renewal, checkpointing, and lease stealing.
+// Implementations must provide atomic conditional updates to ensure consistency
+// across multiple concurrent workers.
 type Checkpointer interface {
-	// Init initialises the Checkpoint
+	// Init establishes a connection to the backend store and creates the lease table if needed.
 	Init() error
 
-	// GetLease attempts to gain a lock on the given shard
+	// GetLease attempts to acquire or renew a lease on the given shard for the specified worker.
 	GetLease(*par.ShardStatus, string) error
 
-	// CheckpointSequence writes a checkpoint at the designated sequence ID
+	// CheckpointSequence persists the current checkpoint sequence number for the shard.
 	CheckpointSequence(*par.ShardStatus) error
 
-	// FetchCheckpoint retrieves the checkpoint for the given shard
+	// FetchCheckpoint retrieves the stored checkpoint, lease owner, and lease timeout for the shard.
 	FetchCheckpoint(*par.ShardStatus) error
 
-	// RemoveLeaseInfo to remove lease info for shard entry because the shard no longer exists
+	// RemoveLeaseInfo removes all lease data for a shard that no longer exists in Kinesis.
 	RemoveLeaseInfo(string) error
 
-	// RemoveLeaseOwner to remove lease owner for the shard entry to make the shard available for reassignment
+	// RemoveLeaseOwner clears the lease owner for a shard, making it available for reassignment.
 	RemoveLeaseOwner(string) error
 
-	// GetLeaseOwner to get current owner of lease for shard
+	// GetLeaseOwner returns the current lease owner for the specified shard.
 	GetLeaseOwner(string) (string, error)
 
-	// ListActiveWorkers returns active workers and their shards (New Lease Stealing Methods)
+	// ListActiveWorkers returns a map of worker IDs to their assigned shards (used for rebalancing).
 	ListActiveWorkers(map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error)
 
-	// ClaimShard claims a shard for stealing
+	// ClaimShard places a claim request on a shard to signal a steal attempt.
 	ClaimShard(*par.ShardStatus, string) error
 }
 

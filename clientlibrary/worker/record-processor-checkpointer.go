@@ -17,7 +17,6 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package worker
 package worker
 
 import (
@@ -28,30 +27,25 @@ import (
 )
 
 type (
-
-	// PreparedCheckpointer
-	/*
-	 * Objects of this class are prepared to checkpoint at a specific sequence number. They use an
-	 * IRecordProcessorCheckpointer to do the actual checkpointing, so their checkpoint is subject to the same 'didn't go
-	 * backwards' validation as a normal checkpoint.
-	 */
+	// PreparedCheckpointer holds a prepared checkpoint at a specific sequence number.
+	// It delegates to an IRecordProcessorCheckpointer for persistence, so checkpoints
+	// are subject to the same forward-only validation.
 	PreparedCheckpointer struct {
 		pendingCheckpointSequenceNumber *kcl.ExtendedSequenceNumber
 		checkpointer                    kcl.IRecordProcessorCheckpointer
 	}
 
-	//RecordProcessorCheckpointer
-	/*
-	 * This class is used to enable RecordProcessors to checkpoint their progress.
-	 * The Amazon Kinesis Client Library will instantiate an object and provide a reference to the application
-	 * RecordProcessor instance. Amazon Kinesis Client Library will create one instance per shard assignment.
-	 */
+	// RecordProcessorCheckpointer enables record processors to checkpoint their progress.
+	// The library creates one instance per shard assignment and passes it to the
+	// IRecordProcessor lifecycle methods.
 	RecordProcessorCheckpointer struct {
 		shard      *par.ShardStatus
 		checkpoint chk.Checkpointer
 	}
 )
 
+// NewRecordProcessorCheckpoint creates a new checkpointer for the given shard
+// that persists progress via the provided Checkpointer backend.
 func NewRecordProcessorCheckpoint(shard *par.ShardStatus, checkpoint chk.Checkpointer) kcl.IRecordProcessorCheckpointer {
 	return &RecordProcessorCheckpointer{
 		shard:      shard,

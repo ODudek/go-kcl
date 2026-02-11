@@ -17,23 +17,11 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-// Package interfaces
-// The implementation is derived from https://github.com/awslabs/amazon-kinesis-client
-/*
- * Copyright 2014-2015 Amazon.com, Inc. or its affiliates. All Rights Reserved.
- *
- * Licensed under the Amazon Software License (the "License").
- * You may not use this file except in compliance with the License.
- * A copy of the License is located at
- *
- * http://aws.amazon.com/asl/
- *
- * or in the "license" file accompanying this file. This file is distributed
- * on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
- * express or implied. See the License for the specific language governing
- * permissions and limitations under the License.
- */
-
+// Package interfaces defines the user-facing interfaces for the Kinesis Client Library.
+//
+// Applications must implement IRecordProcessor and IRecordProcessorFactory to
+// consume records from a Kinesis stream. The library manages the lifecycle:
+// Initialize -> ProcessRecords (repeated) -> Shutdown.
 package interfaces
 
 import (
@@ -44,72 +32,68 @@ import (
 )
 
 const (
-	/*
-	 * REQUESTED Indicates that the entire application is being shutdown, and if desired the record processor will be given a
-	 * final chance to checkpoint. This state will not trigger a direct call to
-	 * {@link com.amazonaws.services.kinesis.clientlibrary.interfaces.v2.IRecordProcessor#shutdown(ShutdownInput)}, but
-	 * instead depend on a different interface for backward compatibility.
-	 */
+	// REQUESTED indicates the entire application is shutting down.
+	// The record processor will be given a final chance to checkpoint.
 	REQUESTED ShutdownReason = iota + 1
 
-	/*
-	 * Terminate processing for this RecordProcessor (resharding use case).
-	 * Indicates that the shard is closed and all records from the shard have been delivered to the application.
-	 * Applications SHOULD checkpoint their progress to indicate that they have successfully processed all records
-	 * from this shard and processing of child shards can be started.
-	 */
+	// TERMINATE indicates the shard is closed and all records have been delivered.
+	// Applications MUST checkpoint their progress so that processing of child
+	// shards can begin.
 	TERMINATE
 
-	/*
-	 * Processing will be moved to a different record processor (fail over, load balancing use cases).
-	 * Applications SHOULD NOT checkpoint their progress (as another record processor may have already started
-	 * processing data).
-	 */
+	// ZOMBIE indicates processing is moving to a different record processor
+	// (failover or load balancing). Applications SHOULD NOT checkpoint as another
+	// processor may have already started processing data.
 	ZOMBIE
 )
 
-// Containers for the parameters to the IRecordProcessor
 type (
-	/*
-	 * Reason the RecordProcessor is being shutdown.
-	 * Used to distinguish between a fail-over vs. a termination (shard is closed and all records have been delivered).
-	 * In case of a fail-over, applications should NOT checkpoint as part of shutdown,
-	 * since another record processor may have already started processing records for that shard.
-	 * In case of termination (resharding use case), applications SHOULD keep checkpointing their progress to indicate
-	 * that they have successfully processed all the records (processing of child shards can then begin).
-	 */
+	// ShutdownReason indicates why a record processor is being shut down.
+	// Used to distinguish between failover vs. termination (shard closed).
+	// In case of failover, applications should NOT checkpoint.
+	// In case of termination, applications SHOULD checkpoint their progress.
 	ShutdownReason int
 
+	// InitializationInput provides information to the record processor when it
+	// starts processing a new shard. Passed to IRecordProcessor.Initialize.
 	InitializationInput struct {
-		// The shardId that the record processor is being initialized for.
+		// ShardId is the unique identifier of the shard this processor is responsible for.
 		ShardId string
 
-		// The last extended sequence number that was successfully checkpointed by the previous record processor.
+		// ExtendedSequenceNumber is the last successfully checkpointed position.
+		// Nil indicates no prior checkpoint exists.
 		ExtendedSequenceNumber *ExtendedSequenceNumber
 	}
 
+	// ProcessRecordsInput contains a batch of records from a Kinesis shard along
+	// with metadata and a checkpointer for tracking progress. Passed to
+	// IRecordProcessor.ProcessRecords.
 	ProcessRecordsInput struct {
-		// The time that this batch of records was received by the KCL.
+		// CacheEntryTime is when the batch was received from Kinesis.
 		CacheEntryTime *time.Time
 
-		// The time that this batch of records was prepared to be provided to the RecordProcessor.
+		// CacheExitTime is when the batch was prepared for delivery to the processor.
 		CacheExitTime *time.Time
 
-		// The records received from Kinesis. These records may have been de-aggregated if they were published by the KPL.
+		// Records are the data records from Kinesis, potentially de-aggregated
+		// if published by the KPL.
 		Records []types.Record
 
-		// A checkpointer that the RecordProcessor can use to checkpoint its progress.
+		// Checkpointer provides methods to checkpoint progress within this batch.
 		Checkpointer IRecordProcessorCheckpointer
 
-		// How far behind this batch of records was when received from Kinesis.
+		// MillisBehindLatest is how far behind the stream tip this batch was when
+		// received, in milliseconds. Use this to monitor processing lag.
 		MillisBehindLatest int64
 	}
 
+	// ShutdownInput provides information and capabilities when a record processor
+	// is being shut down. Passed to IRecordProcessor.Shutdown.
 	ShutdownInput struct {
-		// ShutdownReason shows why RecordProcessor is going to be shutdown.
+		// ShutdownReason indicates why this processor is shutting down.
 		ShutdownReason ShutdownReason
 
-		// Checkpointer is used to record the current progress.
+		// Checkpointer provides methods to record final progress before shutdown.
 		Checkpointer IRecordProcessorCheckpointer
 	}
 )
@@ -120,6 +104,8 @@ var shutdownReasonMap = map[ShutdownReason]*string{
 	ZOMBIE:    aws.String("ZOMBIE"),
 }
 
+// ShutdownReasonMessage returns a human-readable string for the given ShutdownReason
+// (e.g. "TERMINATE", "ZOMBIE", "REQUESTED").
 func ShutdownReasonMessage(reason ShutdownReason) *string {
 	return shutdownReasonMap[reason]
 }
