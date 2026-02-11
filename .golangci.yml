@@ -1,0 +1,11 @@
+version: "2"
+
+run:
+  timeout: 600s
+
+linters:
+  exclusions:
+    paths:
+      - test
+      - internal
+      - _mock.go

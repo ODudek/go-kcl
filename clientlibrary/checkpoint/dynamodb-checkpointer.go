@@ -52,7 +52,7 @@ const (
 )
 
 var (
-	NoLeaseOwnerErr = errors.New("no LeaseOwner in checkpoints table")
+	ErrNoLeaseOwner = errors.New("no LeaseOwner in checkpoints table")
 )
 
 // DynamoCheckpoint implements the Checkpoint interface using DynamoDB as a backend
@@ -350,7 +350,7 @@ func (checkpointer *DynamoCheckpoint) GetLeaseOwner(shardID string) (string, err
 	assignedVar, assignedToOk := currentCheckpoint[LeaseOwnerKey]
 
 	if !assignedToOk {
-		return "", NoLeaseOwnerErr
+		return "", ErrNoLeaseOwner
 	}
 
 	return assignedVar.(*types.AttributeValueMemberS).Value, nil

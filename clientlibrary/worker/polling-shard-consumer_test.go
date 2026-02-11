@@ -51,7 +51,7 @@ func TestCallGetRecordsAPI(t *testing.T) {
 	assert.Equal(t, &ret, out)
 	m1.AssertExpectations(t)
 
-	// check that localTPSExceededError is thrown when trying more than 5 TPS
+	// check that errLocalTPSExceeded is thrown when trying more than 5 TPS
 	m2 := MockKinesisSubscriberGetter{}
 	psc2 := PollingShardConsumer{
 		commonShardConsumer: commonShardConsumer{kc: &m2},
@@ -62,7 +62,7 @@ func TestCallGetRecordsAPI(t *testing.T) {
 	}
 	out2, _, err2 := psc2.callGetRecordsAPI(&gri)
 	assert.Nil(t, out2)
-	assert.ErrorIs(t, err2, localTPSExceededError)
+	assert.ErrorIs(t, err2, errLocalTPSExceeded)
 	m2.AssertExpectations(t)
 
 	// check that getRecords is called normally in bytesRead = 0 case
