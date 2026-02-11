@@ -52,11 +52,11 @@ const (
 )
 
 type ErrLeaseNotAcquired struct {
-	cause string
+	Cause string
 }
 
 func (e ErrLeaseNotAcquired) Error() string {
-	return fmt.Sprintf("lease not acquired: %s", e.cause)
+	return fmt.Sprintf("lease not acquired: %s", e.Cause)
 }
 
 // Checkpointer handles checkpointing when a record has been processed
@@ -94,3 +94,6 @@ var ErrSequenceIDNotFound = errors.New("SequenceIDNotFoundForShard")
 
 // ErrShardNotAssigned is returned by ListActiveWorkers when no AssignedTo is found
 var ErrShardNotAssigned = errors.New("AssignedToNotFoundForShard")
+
+// ErrNoLeaseOwner is returned by GetLeaseOwner when no lease owner exists for the shard
+var ErrNoLeaseOwner = errors.New("no LeaseOwner in checkpoints table")

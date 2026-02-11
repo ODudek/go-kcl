@@ -51,10 +51,6 @@ const (
 	NumMaxRetries = 10
 )
 
-var (
-	ErrNoLeaseOwner = errors.New("no LeaseOwner in checkpoints table")
-)
-
 // DynamoCheckpoint implements the Checkpoint interface using DynamoDB as a backend
 type DynamoCheckpoint struct {
 	log                     logger.Logger
