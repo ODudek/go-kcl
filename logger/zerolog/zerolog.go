@@ -24,7 +24,7 @@ package zerolog
 
 import (
 	"github.com/rs/zerolog"
-	"github.com/vmware/vmware-go-kcl-v2/logger"
+	"github.com/ODudek/go-kcl/logger"
 	"gopkg.in/natefinch/lumberjack.v2"
 	"os"
 )

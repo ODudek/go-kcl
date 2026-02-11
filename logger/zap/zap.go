@@ -24,7 +24,7 @@ package zap
 import (
 	"os"
 
-	"github.com/vmware/vmware-go-kcl-v2/logger"
+	"github.com/ODudek/go-kcl/logger"
 	uzap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	lumberjack "gopkg.in/natefinch/lumberjack.v2"

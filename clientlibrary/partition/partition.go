@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vmware/vmware-go-kcl-v2/clientlibrary/config"
+	"github.com/ODudek/go-kcl/clientlibrary/config"
 )
 
 type ShardStatus struct {

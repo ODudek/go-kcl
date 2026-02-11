@@ -38,7 +38,7 @@ import (
 	cwatch "github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 
-	"github.com/vmware/vmware-go-kcl-v2/logger"
+	"github.com/ODudek/go-kcl/logger"
 )
 
 // DefaultCloudwatchMetricsBufferDuration Buffer metrics for at most this long before publishing to CloudWatch.

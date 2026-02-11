@@ -44,8 +44,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
-	"github.com/vmware/vmware-go-kcl-v2/clientlibrary/metrics"
-	"github.com/vmware/vmware-go-kcl-v2/logger"
+	"github.com/ODudek/go-kcl/clientlibrary/metrics"
+	"github.com/ODudek/go-kcl/logger"
 )
 
 const (

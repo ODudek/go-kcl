@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/vmware/vmware-go-kcl-v2/logger"
-	"github.com/vmware/vmware-go-kcl-v2/logger/zap"
+	"github.com/ODudek/go-kcl/logger"
+	"github.com/ODudek/go-kcl/logger/zap"
 	uzap "go.uber.org/zap"
 )
 

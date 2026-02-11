@@ -51,13 +51,3 @@ lint: ## - runs golangci-lint
 .PHONY: lint-docker
 lint-docker: ## - runs golangci-lint with docker container
 	@ ./_support/scripts/ci.sh lintDocker
-
-.PHONY: sonar-scan
-sonar-scan: ## - start sonar qube locally with docker (you will need docker installed in your machine)
-	@ # after start, setup a new project with the name sms-local and a new token sms-token, fill the token against the -Dsonar.login= parameter.
-	@ # login with user: admin pwd: vmware
-	@ $(SHELL) _support/scripts/sonar-scan.sh
-
-.PHONY: sonar-stop
-sonar-stop: ## - stop sonar qube docker container
-	@ docker stop sonarqube

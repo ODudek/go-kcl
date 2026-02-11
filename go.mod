@@ -1,4 +1,4 @@
-module github.com/vmware/vmware-go-kcl-v2
+module github.com/ODudek/go-kcl
 
 go 1.21
 
