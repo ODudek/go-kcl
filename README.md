@@ -124,6 +124,53 @@ kcl:events:shard:shardId-000000000001
 - Sub-millisecond latency for all operations
 - All `Checkpointer` interface methods supported
 
+## Prometheus Metrics
+
+Go-KCL ships with a Prometheus `MonitoringService` that exposes consumer metrics (records processed, bytes processed, millis behind latest, leases held, lease renewals, get/process records duration).
+
+### Standalone mode (default)
+
+KCL registers metrics on the global Prometheus registry and starts its own HTTP server:
+
+```go
+import prommetrics "github.com/ODudek/go-kcl/clientlibrary/metrics/prometheus"
+
+metricsService := prommetrics.NewMonitoringService(":2112", "us-east-1", log)
+kclConfig.WithMonitoringService(metricsService)
+```
+
+### External registry
+
+When your application already exposes a Prometheus `/metrics` endpoint, pass your own registry. KCL will register its collectors there and will **not** start a second HTTP server:
+
+```go
+import (
+    prom        "github.com/prometheus/client_golang/prometheus"
+    prommetrics "github.com/ODudek/go-kcl/clientlibrary/metrics/prometheus"
+)
+
+registry := prom.NewRegistry()
+
+metricsService := prommetrics.NewMonitoringServiceWithOptions(
+    prommetrics.WithRegistry(registry),
+    prommetrics.WithRegion("us-east-1"),
+    prommetrics.WithLogger(log),
+)
+kclConfig.WithMonitoringService(metricsService)
+
+// Expose `registry` through your own HTTP handler.
+```
+
+### Available options
+
+| Option | Description |
+|---|---|
+| `WithListenAddress(addr)` | Address for the standalone metrics server (default `:8080`) |
+| `WithRegion(region)` | AWS region label |
+| `WithLogger(l)` | Custom logger (defaults to Logrus standard logger) |
+| `WithRegistry(reg)` | Use a custom `*prometheus.Registry`; disables the built-in server |
+| `WithRegisterer(r)` | Use a custom `prometheus.Registerer`; disables the built-in server |
+
 ## Examples
 
 Working examples are available in the [`examples/`](examples/) directory:
@@ -133,6 +180,7 @@ Working examples are available in the [`examples/`](examples/) directory:
 | [`dynamodb-consumer`](examples/dynamodb-consumer/) | DynamoDB | Basic Kinesis consumer with default DynamoDB checkpointer |
 | [`redis-consumer`](examples/redis-consumer/) | Redis | Basic Kinesis consumer with Redis checkpointer |
 | [`redis-multitenant`](examples/redis-multitenant/) | Redis | Two applications sharing one Redis instance |
+| [`prometheus-metrics`](examples/prometheus-metrics/) | Prometheus | Consumer with external Prometheus registry |
 
 ## Documentation
 

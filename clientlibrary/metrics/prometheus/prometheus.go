@@ -30,7 +30,11 @@
 package prometheus
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
+	"time"
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -38,8 +42,14 @@ import (
 	"github.com/ODudek/go-kcl/logger"
 )
 
-// MonitoringService publishes kcl metrics to Prometheus.
-// It might be trick if the service onboarding with KCL already uses Prometheus.
+// MonitoringService publishes KCL metrics to Prometheus.
+//
+// Two modes of operation:
+//   - Standalone (default / backward-compatible): registers metrics on the
+//     global registry and starts its own HTTP server.
+//   - External registry: the caller provides a *prom.Registry (or
+//     prom.Registerer); no HTTP server is started and the caller is
+//     responsible for exposing metrics.
 type MonitoringService struct {
 	listenAddress string
 	namespace     string
@@ -47,6 +57,11 @@ type MonitoringService struct {
 	workerID      string
 	region        string
 	logger        logger.Logger
+
+	registerer  prom.Registerer
+	gatherer    prom.Gatherer
+	startServer bool
+	server      *http.Server
 
 	processedRecords   *prom.CounterVec
 	processedBytes     *prom.CounterVec
@@ -57,12 +72,35 @@ type MonitoringService struct {
 	processRecordsTime *prom.HistogramVec
 }
 
-// NewMonitoringService returns a Monitoring service publishing metrics to Prometheus.
-func NewMonitoringService(listenAddress, region string, logger logger.Logger) *MonitoringService {
+// NewMonitoringService returns a MonitoringService that registers metrics on
+// the global Prometheus registry and starts its own HTTP server on
+// listenAddress. This preserves the original constructor signature for
+// backward compatibility.
+func NewMonitoringService(listenAddress, region string, log logger.Logger) *MonitoringService {
+	return NewMonitoringServiceWithOptions(
+		WithListenAddress(listenAddress),
+		WithRegion(region),
+		WithLogger(log),
+	)
+}
+
+// NewMonitoringServiceWithOptions creates a MonitoringService configured via
+// functional options. When no WithRegistry / WithRegisterer option is
+// supplied the service behaves identically to NewMonitoringService (global
+// registry, own HTTP server).
+func NewMonitoringServiceWithOptions(opts ...Option) *MonitoringService {
+	cfg := defaultConfig()
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	return &MonitoringService{
-		listenAddress: listenAddress,
-		region:        region,
-		logger:        logger,
+		listenAddress: cfg.listenAddress,
+		region:        cfg.region,
+		logger:        cfg.logger,
+		registerer:    cfg.registerer,
+		gatherer:      cfg.gatherer,
+		startServer:   cfg.startServer,
 	}
 }
 
@@ -100,7 +138,7 @@ func (p *MonitoringService) Init(appName, streamName, workerID string) error {
 		Help: "The time taken to process records",
 	}, []string{"kinesisStream", "shard"})
 
-	metrics := []prom.Collector{
+	collectors := []prom.Collector{
 		p.processedBytes,
 		p.processedRecords,
 		p.behindLatestMillis,
@@ -109,10 +147,13 @@ func (p *MonitoringService) Init(appName, streamName, workerID string) error {
 		p.getRecordsTime,
 		p.processRecordsTime,
 	}
-	for _, metric := range metrics {
-		err := prom.Register(metric)
-		if err != nil {
-			return err
+	for _, c := range collectors {
+		if err := p.registerer.Register(c); err != nil {
+			var are prom.AlreadyRegisteredError
+			if errors.As(err, &are) {
+				continue
+			}
+			return fmt.Errorf("registering collector: %w", err)
 		}
 	}
 
@@ -120,11 +161,24 @@ func (p *MonitoringService) Init(appName, streamName, workerID string) error {
 }
 
 func (p *MonitoringService) Start() error {
-	http.Handle("/metrics", promhttp.Handler())
+	if !p.startServer {
+		return nil
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(p.gatherer, promhttp.HandlerOpts{}))
+
+	p.server = &http.Server{
+		Addr:              p.listenAddress,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
 	go func() {
 		p.logger.Infof("Starting Prometheus listener on %s", p.listenAddress)
-		err := http.ListenAndServe(p.listenAddress, nil)
-		if err != nil {
+		if err := p.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			p.logger.Errorf("Error starting Prometheus metrics endpoint. %+v", err)
 		}
 		p.logger.Infof("Stopped metrics server")
@@ -133,7 +187,18 @@ func (p *MonitoringService) Start() error {
 	return nil
 }
 
-func (p *MonitoringService) Shutdown() {}
+func (p *MonitoringService) Shutdown() {
+	if p.server == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := p.server.Shutdown(ctx); err != nil {
+		p.logger.Errorf("Error shutting down Prometheus metrics server: %+v", err)
+	}
+}
 
 func (p *MonitoringService) IncrRecordsProcessed(shard string, count int) {
 	p.processedRecords.With(prom.Labels{"shard": shard, "kinesisStream": p.streamName}).Add(float64(count))
