@@ -1,0 +1,9 @@
+run:
+  timeout: 600s
+
+issues:
+  exclude-dirs:
+    - test
+    - internal
+  exclude-files:
+    - _mock.go

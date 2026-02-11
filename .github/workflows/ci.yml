@@ -10,86 +10,85 @@ on:
 
 jobs:
   build:
-    name: Continous Integration
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code into the Go module directory
-        uses: actions/checkout@v2
+      - name: Check out code
+        uses: actions/checkout@v6
 
-      - name: Set up Go 1.21.x
-        uses: actions/setup-go@v2
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
           go-version: ^1.21
-        id: go
 
       - name: Build
-        shell: bash
-        run: |
-          make build
+        run: go build -v ./...
 
       - name: Test
-        shell: bash
-        run: |
-          make test
+        run: go list ./... | grep -v /test | xargs -I% go test % -v -cover -race
 
-  scans:
-    name: Checks, Lints and Scans
+  lint:
+    name: Lint & Format
     runs-on: ubuntu-latest
     steps:
-      - name: Check out code into the Go module directory
-        uses: actions/checkout@v2
+      - name: Check out code
+        uses: actions/checkout@v6
 
-      - name: Set up Go 1.21.x
-        uses: actions/setup-go@v2
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
           go-version: ^1.21
-        id: go
 
       - name: Format Check
-        shell: bash
         run: |
-          make format-check
+          RESULT=$(gofmt -l .)
+          if [ -n "$RESULT" ]; then
+            echo "Files need formatting:"
+            echo "$RESULT"
+            exit 1
+          fi
 
       - name: Lint
-        shell: bash
-        run: |
-          make lint-docker
+        uses: golangci/golangci-lint-action@v9
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
 
       - name: Run Gosec Security Scanner
-        uses: securego/gosec@master
+        uses: securego/gosec@v2
         with:
-          # let the report trigger content trigger a failure using the GitHub Security features.
           args: '-no-fail -fmt sarif -out results.sarif -exclude-dir internal -exclude-dir vendor -severity high ./...'
 
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v1
+        uses: github/codeql-action/upload-sarif@v4
         with:
-          # path to SARIF file relative to the root of the repository
           sarif_file: results.sarif
 
   tag:
     name: Auto Tag Release
-    needs: [build, scans]
+    needs: [build, lint, security]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Check out code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Extract version from CHANGELOG.md
         id: version
-        shell: bash
         run: |
           VERSION=$(grep -oP '## \[\K[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -1)
           echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Check if tag already exists
         id: check
-        shell: bash
         run: |
           if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -99,7 +98,6 @@ jobs:
 
       - name: Create and push tag
         if: steps.check.outputs.exists == 'false'
-        shell: bash
         run: |
           git tag "${{ steps.version.outputs.version }}"
           git push origin "${{ steps.version.outputs.version }}"

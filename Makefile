@@ -3,10 +3,6 @@ help: ## - Show this help message
 	@printf "\033[32m\xE2\x9c\x93 usage: make [target]\n\n\033[0m"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: up
-up: ## - start docker compose
-	@ cd _support/docker && docker-compose -f docker-compose.yml up
-
 .PHONY: build-common
 build-common: ## - execute build common tasks clean and mod tidy
 	@ go version
@@ -22,15 +18,20 @@ build: build-common ## - build a debug binary to the current platform (windows, 
 
 .PHONY: format-check
 format-check: ## - check files format using gofmt
-	@ ./_support/scripts/ci.sh fmtCheck
+	@RESULT=$$(gofmt -l .); \
+	if [ -n "$$RESULT" ]; then \
+		echo "You need to run \"gofmt -w ./\" to fix your formatting."; \
+		echo "$$RESULT"; \
+		exit 1; \
+	fi
 
-.PHONY: format-check
+.PHONY: format
 format: ## - apply golang file format using gofmt
-	@ ./_support/scripts/ci.sh format
+	@ gofmt -w ./
 
 .PHONY: test
 test: build-common ## - execute go test command for unit and mocked tests
-	@ ./_support/scripts/ci.sh unitTest
+	@ go list ./... | grep -v /test | xargs -I% go test % -v -cover -race
 
 .PHONY: integration-test
 integration-test: ## - execute go test command for integration tests (aws credentials needed)
@@ -38,16 +39,8 @@ integration-test: ## - execute go test command for integration tests (aws creden
 
 .PHONY: scan
 scan: ## - execute static code analysis
-	@ ./_support/scripts/ci.sh scan
-
-.PHONY: local-scan
-local-scan: ## - execute static code analysis locally
-	@ ./_support/scripts/ci.sh localScan
+	@ gosec -fmt=sarif -out=results.sarif -exclude-dir=internal -exclude-dir=vendor -severity=high ./...
 
 .PHONY: lint
 lint: ## - runs golangci-lint
-	@ ./_support/scripts/ci.sh lint
-
-.PHONY: lint-docker
-lint-docker: ## - runs golangci-lint with docker container
-	@ ./_support/scripts/ci.sh lintDocker
+	@ golangci-lint run --timeout=600s --verbose
