@@ -117,7 +117,7 @@ func (p *logProcessor) Initialize(input *kc.InitializationInput) {
 	fmt.Printf("[%s][init] ShardId: %s\n", p.prefix, input.ShardId)
 }
 
-func (p *logProcessor) ProcessRecords(input *kc.ProcessRecordsInput) {
+func (p *logProcessor) ProcessRecords(input *kc.ProcessRecordsInput) error {
 	for _, r := range input.Records {
 		fmt.Printf("[%s][record] Key=%s Data=%s\n",
 			p.prefix,
@@ -129,6 +129,7 @@ func (p *logProcessor) ProcessRecords(input *kc.ProcessRecordsInput) {
 		lastSeq := input.Records[len(input.Records)-1].SequenceNumber
 		_ = input.Checkpointer.Checkpoint(lastSeq)
 	}
+	return nil
 }
 
 func (p *logProcessor) Shutdown(input *kc.ShutdownInput) {

@@ -182,6 +182,33 @@ Working examples are available in the [`examples/`](examples/) directory:
 | [`redis-multitenant`](examples/redis-multitenant/) | Redis | Two applications sharing one Redis instance |
 | [`prometheus-metrics`](examples/prometheus-metrics/) | Prometheus | Consumer with external Prometheus registry |
 
+## Error Handling in ProcessRecords
+
+`IRecordProcessor.ProcessRecords` returns `error`. This is the primary mechanism for controlling shard iterator advancement:
+
+- **Return `nil`** — batch processed successfully. The consumer checkpoints and advances to the next batch.
+- **Return `error`** — batch failed. The consumer **does not advance the shard iterator** and exits `getRecords`, which releases the shard lease. On the next lease acquisition the consumer restarts from the last checkpoint and retries the same batch.
+
+```go
+func (p *myProcessor) ProcessRecords(input *kc.ProcessRecordsInput) error {
+    for _, record := range input.Records {
+        if err := process(record); err != nil {
+            // Returning the error causes the entire batch to be retried.
+            return fmt.Errorf("processing record %s: %w", aws.ToString(record.SequenceNumber), err)
+        }
+    }
+
+    // Checkpoint after successful processing
+    lastSeq := input.Records[len(input.Records)-1].SequenceNumber
+    if err := input.Checkpointer.Checkpoint(lastSeq); err != nil {
+        return fmt.Errorf("checkpoint failed: %w", err)
+    }
+    return nil
+}
+```
+
+> **Note:** Records before the failed one that were already processed will be retried on the next attempt. Make your processor idempotent (e.g. use conditional writes).
+
 ## Documentation
 
 Go-KCL matches exactly the same interface and programming model from original Amazon KCL, the best place for getting reference, tutorial is from Amazon itself:

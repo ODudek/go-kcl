@@ -77,9 +77,9 @@ func (p *recordProcessor) Initialize(input *kc.InitializationInput) {
 		aws.ToString(input.ExtendedSequenceNumber.SequenceNumber))
 }
 
-func (p *recordProcessor) ProcessRecords(input *kc.ProcessRecordsInput) {
+func (p *recordProcessor) ProcessRecords(input *kc.ProcessRecordsInput) error {
 	if len(input.Records) == 0 {
-		return
+		return nil
 	}
 
 	for _, r := range input.Records {
@@ -92,6 +92,7 @@ func (p *recordProcessor) ProcessRecords(input *kc.ProcessRecordsInput) {
 	if err := input.Checkpointer.Checkpoint(lastSeq); err != nil {
 		fmt.Printf("[error] checkpoint failed: %v\n", err)
 	}
+	return nil
 }
 
 func (p *recordProcessor) Shutdown(input *kc.ShutdownInput) {

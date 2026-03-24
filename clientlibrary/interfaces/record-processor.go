@@ -33,7 +33,9 @@ type (
 		// ProcessRecords processes a batch of data records from the shard.
 		// Upon failover, the new instance will receive records with sequence numbers
 		// greater than the last checkpointed position.
-		ProcessRecords(processRecordsInput *ProcessRecordsInput)
+		// If an error is returned, the shard consumer will stop advancing the iterator
+		// and retry the same batch of records from the last checkpoint.
+		ProcessRecords(processRecordsInput *ProcessRecordsInput) error
 
 		// Shutdown is called when the record processor is no longer needed.
 		// When ShutdownInput.ShutdownReason is TERMINATE, you MUST checkpoint before returning.
