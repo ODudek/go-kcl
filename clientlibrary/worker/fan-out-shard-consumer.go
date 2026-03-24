@@ -125,7 +125,10 @@ func (sc *FanOutShardConsumer) getRecords() error {
 				continue
 			}
 			continuationSequenceNumber = subEvent.Value.ContinuationSequenceNumber
-			sc.processRecords(getRecordsStartTime, subEvent.Value.Records, subEvent.Value.MillisBehindLatest, recordCheckpointer)
+			if err := sc.processRecords(getRecordsStartTime, subEvent.Value.Records, subEvent.Value.MillisBehindLatest, recordCheckpointer); err != nil {
+				log.Errorf("Error processing records from shard %s: %+v", sc.shard.ID, err)
+				return err
+			}
 
 			// The shard has been closed, so no new records can be read from it
 			if continuationSequenceNumber == nil {

@@ -57,12 +57,12 @@ func (dd *dumpRecordProcessor) Initialize(input *kc.InitializationInput) {
 	dd.count = 0
 }
 
-func (dd *dumpRecordProcessor) ProcessRecords(input *kc.ProcessRecordsInput) {
+func (dd *dumpRecordProcessor) ProcessRecords(input *kc.ProcessRecordsInput) error {
 	dd.t.Log("Processing Records...")
 
 	// don't process empty record
 	if len(input.Records) == 0 {
-		return
+		return nil
 	}
 
 	for _, v := range input.Records {
@@ -79,6 +79,7 @@ func (dd *dumpRecordProcessor) ProcessRecords(input *kc.ProcessRecordsInput) {
 	diff := input.CacheExitTime.Sub(*input.CacheEntryTime)
 	dd.t.Logf("Checkpoint progress at: %v,  MillisBehindLatest = %v, KCLProcessTime = %v", lastRecordSequenceNumber, input.MillisBehindLatest, diff)
 	_ = input.Checkpointer.Checkpoint(lastRecordSequenceNumber)
+	return nil
 }
 
 func (dd *dumpRecordProcessor) Shutdown(input *kc.ShutdownInput) {
