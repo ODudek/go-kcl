@@ -22,9 +22,10 @@ package worker
 import (
 	"context"
 	"errors"
-	log "github.com/sirupsen/logrus"
 	"math"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
@@ -152,7 +153,7 @@ func (sc *PollingShardConsumer) getRecords() error {
 		}
 		getResp, coolDownPeriod, err := sc.callGetRecordsAPI(getRecordsArgs)
 		if err != nil {
-			//aws-sdk-go-v2 https://github.com/aws/aws-sdk-go-v2/blob/main/CHANGELOG.md#error-handling
+			// aws-sdk-go-v2 https://github.com/aws/aws-sdk-go-v2/blob/main/CHANGELOG.md#error-handling
 			var throughputExceededErr *types.ProvisionedThroughputExceededException
 			var kmsThrottlingErr *types.KMSThrottlingException
 			if errors.As(err, &throughputExceededErr) {
@@ -196,6 +197,17 @@ func (sc *PollingShardConsumer) getRecords() error {
 				// exponential backoff
 				// https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Programming.Errors.html#Programming.Errors.RetryAndBackoff
 				time.Sleep(time.Duration(math.Exp2(float64(retriedErrors))*100) * time.Millisecond)
+				continue
+			}
+			var expiredIteratorErr *types.ExpiredIteratorException
+			if errors.As(err, &expiredIteratorErr) {
+				log.Infof("Iterator expired for shard %s, renewing iterator from checkpoint", sc.shard.ID)
+				newIterator, iterErr := sc.getShardIterator()
+				if iterErr != nil {
+					log.Errorf("Failed to renew iterator for shard %s: %+v", sc.shard.ID, iterErr)
+					return iterErr
+				}
+				shardIterator = newIterator
 				continue
 			}
 			log.Errorf("Error getting records from Kinesis that cannot be retried: %+v Request: %s", err, getRecordsArgs)
