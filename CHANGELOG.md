@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-05-20
+
+### Fixed
+
+- `Worker.eventLoop` now performs the first shard sync immediately on startup, before entering the jittered `ShardSyncIntervalMillis` loop. This removes the initial 30-90 second discovery delay with the default 60 second shard sync interval while preserving jitter for subsequent periodic syncs.
+
 ## [0.4.1] - 2026-03-26
 
 ### Fixed
