@@ -266,7 +266,7 @@ func (w *Worker) newShardConsumer(shard *par.ShardStatus) shardConsumer {
 func (w *Worker) eventLoop() {
 	log := w.kclConfig.Logger
 
-	var foundShards int
+	foundShards, _ := w.syncShards(0, 0)
 	for {
 		// Add [-50%, +50%] random jitter to ShardSyncIntervalMillis. When multiple workers
 		// starts at the same time, this decreases the probability of them calling
@@ -283,16 +283,10 @@ func (w *Worker) eventLoop() {
 			log.Debugf("Waited %d ms to sync shards...", shardSyncSleep)
 		}
 
-		err := w.syncShard()
-		if err != nil {
-			log.Errorf("Error syncing shards: %+v, Retrying in %d ms...", err, shardSyncSleep)
-			time.Sleep(time.Duration(shardSyncSleep) * time.Millisecond)
+		var ok bool
+		foundShards, ok = w.syncShards(foundShards, shardSyncSleep)
+		if !ok {
 			continue
-		}
-
-		if foundShards == 0 || foundShards != len(w.shardStatus) {
-			foundShards = len(w.shardStatus)
-			log.Infof("Found %d shards", foundShards)
 		}
 
 		// Count the number of leases held by this worker excluding the processed shard
@@ -369,7 +363,7 @@ func (w *Worker) eventLoop() {
 		}
 
 		if w.kclConfig.EnableLeaseStealing {
-			err = w.rebalance()
+			err := w.rebalance()
 			if err != nil {
 				log.Warnf("Error in rebalance: %+v", err)
 			}
@@ -460,6 +454,26 @@ func (w *Worker) rebalance() error {
 		return err
 	}
 	return nil
+}
+
+func (w *Worker) syncShards(foundShards, retryDelayMillis int) (int, bool) {
+	log := w.kclConfig.Logger
+	err := w.syncShard()
+	if err != nil {
+		if retryDelayMillis > 0 {
+			log.Errorf("Error syncing shards: %+v, Retrying in %d ms...", err, retryDelayMillis)
+			time.Sleep(time.Duration(retryDelayMillis) * time.Millisecond)
+		} else {
+			log.Errorf("Error syncing shards: %+v", err)
+		}
+		return foundShards, false
+	}
+
+	if foundShards == 0 || foundShards != len(w.shardStatus) {
+		foundShards = len(w.shardStatus)
+		log.Infof("Found %d shards", foundShards)
+	}
+	return foundShards, true
 }
 
 // List all shards and store them into shardStatus table
