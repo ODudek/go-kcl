@@ -125,6 +125,11 @@ const (
 	// DefaultLeaseStealingIntervalMillis Interval between rebalance tasks defaults to 5 seconds.
 	DefaultLeaseStealingIntervalMillis = 5000
 
+	// DefaultLeaseAcquisitionIntervalMillis Wait before the next lease acquisition attempt after the
+	// worker took a lease in the previous iteration, so shards that were contended or released
+	// meanwhile are picked up in seconds rather than after a full shard sync interval.
+	DefaultLeaseAcquisitionIntervalMillis = 2000
+
 	// DefaultLeaseStealingClaimTimeoutMillis Number of milliseconds to wait before another worker can aquire a claimed shard
 	DefaultLeaseStealingClaimTimeoutMillis = 120000
 
@@ -280,6 +285,13 @@ type (
 
 		// LeaseStealingClaimTimeoutMillis The number of milliseconds to wait before another worker can aquire a claimed shard
 		LeaseStealingClaimTimeoutMillis int
+
+		// LeaseAcquisitionIntervalMillis The number of milliseconds (with [-50%, +50%] jitter) to wait
+		// before the next shard sync after this worker acquired a lease, instead of the full
+		// ShardSyncIntervalMillis. A worker takes its whole fair share of free shards in one
+		// iteration; the quick follow-up picks up what was contended or released meanwhile (a
+		// lease another worker raced for, a stolen or child shard).
+		LeaseAcquisitionIntervalMillis int
 
 		// LeaseSyncingTimeInterval The number of milliseconds to wait before syncing with lease table (dynamoDB)
 		LeaseSyncingTimeIntervalMillis int

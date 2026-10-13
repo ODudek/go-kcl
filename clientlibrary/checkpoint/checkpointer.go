@@ -103,7 +103,10 @@ type Checkpointer interface {
 // ErrSequenceIDNotFound is returned by FetchCheckpoint when no SequenceID is found
 var ErrSequenceIDNotFound = errors.New("SequenceIDNotFoundForShard")
 
-// ErrShardNotAssigned is returned by ListActiveWorkers when no AssignedTo is found
+// ErrShardNotAssigned was returned by ListActiveWorkers when no AssignedTo was found.
+//
+// Deprecated: ListActiveWorkers skips unassigned shards and no longer returns it;
+// Worker.rebalance checks for free shards itself.
 var ErrShardNotAssigned = errors.New("AssignedToNotFoundForShard")
 
 // ErrNoLeaseOwner is returned by GetLeaseOwner when no lease owner exists for the shard

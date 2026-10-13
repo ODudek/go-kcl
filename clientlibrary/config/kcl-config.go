@@ -84,6 +84,7 @@ func NewKinesisClientLibConfigWithCredentials(applicationName, streamName, regio
 		EnableLeaseStealing:                              DefaultEnableLeaseStealing,
 		LeaseStealingIntervalMillis:                      DefaultLeaseStealingIntervalMillis,
 		LeaseStealingClaimTimeoutMillis:                  DefaultLeaseStealingClaimTimeoutMillis,
+		LeaseAcquisitionIntervalMillis:                   DefaultLeaseAcquisitionIntervalMillis,
 		LeaseSyncingTimeIntervalMillis:                   DefaultLeaseSyncingIntervalMillis,
 		LeaseRefreshWaitTime:                             DefaultLeaseRefreshWaitTime,
 		MaxRetryCount:                                    DefaultMaxRetryCount,
@@ -259,6 +260,14 @@ func (c *KinesisClientLibConfiguration) WithLeaseStealing(enableLeaseStealing bo
 // WithLeaseStealingIntervalMillis sets the interval between lease stealing (rebalancing) attempts. Default: 5000.
 func (c *KinesisClientLibConfiguration) WithLeaseStealingIntervalMillis(leaseStealingIntervalMillis int) *KinesisClientLibConfiguration {
 	c.LeaseStealingIntervalMillis = leaseStealingIntervalMillis
+	return c
+}
+
+// WithLeaseAcquisitionIntervalMillis sets the wait before the next shard sync after this worker
+// acquired a lease (jittered by [-50%, +50%]). Default: 2000.
+func (c *KinesisClientLibConfiguration) WithLeaseAcquisitionIntervalMillis(leaseAcquisitionIntervalMillis int) *KinesisClientLibConfiguration {
+	checkIsValuePositive("LeaseAcquisitionIntervalMillis", leaseAcquisitionIntervalMillis)
+	c.LeaseAcquisitionIntervalMillis = leaseAcquisitionIntervalMillis
 	return c
 }
 
