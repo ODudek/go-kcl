@@ -10,12 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A starting worker leases its first shard and starts reading immediately. 0.4.2 synced the shard list on startup but still slept a jittered `ShardSyncIntervalMillis` (30–90 s at the default 60 s) before the first lease, so consumption still began about a minute after start. The first `eventLoop` iteration now runs without waiting.
+- A worker takes its whole fair share of free shards in one iteration, `ceil(open shards / active workers)` capped at `MaxLeasesForWorker`, instead of one shard per `ShardSyncIntervalMillis`. Before, shard k of a worker started only after about k × 60 s, so adding shards or workers did not speed consumption up. A worker counts as active while it holds an unexpired lease. Shards are visited in random order, so workers starting together spread over them, and `rebalance` evens out the rest.
 - `rebalance` no longer fails with `Error in rebalance: AssignedToNotFoundForShard` whenever any shard is free (after a deploy, or while another worker's fresh lease has no checkpoint yet). Free shards are left to the normal lease path and stealing is skipped quietly at debug level. Before, this error aborted every rebalance while a shard looked free, so an uneven spread could persist for minutes.
-- Redis checkpointer: `FetchCheckpoint` reads the lease owner and timeout even when the shard has no checkpoint yet, so a shard another worker just leased no longer looks free. `syncLeases` clears another worker's owner that Redis no longer holds (a lease released on shutdown), so a gone worker no longer counts as active. This worker's own leases are never cleared by a sync; their shard consumer renews them.
+- `FetchCheckpoint` (DynamoDB and Redis) reads the lease owner and timeout even when the shard has no checkpoint yet, so a shard another worker just leased no longer looks free. Redis `syncLeases` clears another worker's owner that Redis no longer holds (a lease released on shutdown), so a gone worker no longer counts as active. This worker's own leases are never cleared by a sync; their shard consumer renews them.
 
 ### Added
 
-- `LeaseAcquisitionIntervalMillis` (`WithLeaseAcquisitionIntervalMillis`, default 2000): after an iteration that acquired a lease, the next shard sync runs after this jittered interval instead of the full `ShardSyncIntervalMillis`. A worker still takes one shard per iteration, which keeps shards spread across workers that start together, but it now picks up N free shards in about N × 2 s instead of N × 60 s.
+- `LeaseAcquisitionIntervalMillis` (`WithLeaseAcquisitionIntervalMillis`, default 2000): after an iteration that acquired a lease, the next shard sync runs after this jittered interval instead of the full `ShardSyncIntervalMillis`. This picks up within seconds the shards that were contended or released meanwhile (a lease another worker raced for, a stolen or child shard).
 
 ### Changed
 

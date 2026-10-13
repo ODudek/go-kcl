@@ -402,6 +402,26 @@ func TestListActiveWorkers(t *testing.T) {
 	}
 }
 
+// A shard leased by another worker that has not checkpointed yet must still
+// show its owner, or this worker sees it as free.
+func TestFetchCheckpointWithoutCheckpointStillReadsLeaseOwner(t *testing.T) {
+	timeout := time.Now().UTC().Add(time.Minute).Truncate(time.Millisecond)
+	svc := &mockDynamoDB{tableExist: true, item: map[string]types.AttributeValue{
+		LeaseKeyKey:     &types.AttributeValueMemberS{Value: "0000"},
+		LeaseOwnerKey:   &types.AttributeValueMemberS{Value: "other-worker"},
+		LeaseTimeoutKey: &types.AttributeValueMemberS{Value: timeout.Format(time.RFC3339Nano)},
+	}}
+	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
+	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(svc)
+
+	shard := &par.ShardStatus{ID: "0000", Mux: &sync.RWMutex{}}
+	err := checkpoint.FetchCheckpoint(shard)
+
+	assert.Equal(t, ErrSequenceIDNotFound, err)
+	assert.Equal(t, "other-worker", shard.GetLeaseOwner())
+	assert.True(t, timeout.Equal(shard.GetLeaseTimeout()))
+}
+
 // An unassigned shard is skipped, not an error: the worker's normal lease path
 // picks it up, and rebalance decides on its own not to steal meanwhile.
 func TestListActiveWorkersSkipsUnassignedShard(t *testing.T) {

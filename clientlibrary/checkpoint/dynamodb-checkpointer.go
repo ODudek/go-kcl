@@ -272,14 +272,8 @@ func (checkpointer *DynamoCheckpoint) FetchCheckpoint(shard *par.ShardStatus) er
 		return err
 	}
 
-	sequenceID, ok := checkpoint[SequenceNumberKey]
-	if !ok {
-		return ErrSequenceIDNotFound
-	}
-
-	checkpointer.log.Debugf("Retrieved Shard Iterator %s", sequenceID.(*types.AttributeValueMemberS).Value)
-	shard.SetCheckpoint(sequenceID.(*types.AttributeValueMemberS).Value)
-
+	// The lease is read before the checkpoint: a shard another worker has just
+	// leased has an owner but no checkpoint yet, and must not look free here.
 	if assignedTo, ok := checkpoint[LeaseOwnerKey]; ok {
 		shard.SetLeaseOwner(assignedTo.(*types.AttributeValueMemberS).Value)
 	}
@@ -292,6 +286,14 @@ func (checkpointer *DynamoCheckpoint) FetchCheckpoint(shard *par.ShardStatus) er
 		}
 		shard.LeaseTimeout = currentLeaseTimeout
 	}
+
+	sequenceID, ok := checkpoint[SequenceNumberKey]
+	if !ok {
+		return ErrSequenceIDNotFound
+	}
+
+	checkpointer.log.Debugf("Retrieved Shard Iterator %s", sequenceID.(*types.AttributeValueMemberS).Value)
+	shard.SetCheckpoint(sequenceID.(*types.AttributeValueMemberS).Value)
 
 	return nil
 }
