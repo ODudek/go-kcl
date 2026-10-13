@@ -362,10 +362,11 @@ func (checkpointer *DynamoCheckpoint) ListActiveWorkers(shardStatus map[string]*
 			continue
 		}
 
+		// A free shard has no worker to list; the caller sees it in shardStatus.
 		leaseOwner := shard.GetLeaseOwner()
 		if leaseOwner == "" {
-			checkpointer.log.Debugf("Shard Not Assigned Error. ShardID: %s, WorkerID: %s", shard.ID, checkpointer.kclConfig.WorkerID)
-			return nil, ErrShardNotAssigned
+			checkpointer.log.Debugf("Shard not assigned, skipping. ShardID: %s, WorkerID: %s", shard.ID, checkpointer.kclConfig.WorkerID)
+			continue
 		}
 
 		if w, ok := workers[leaseOwner]; ok {

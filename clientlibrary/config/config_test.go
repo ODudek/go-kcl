@@ -45,6 +45,7 @@ func TestConfig(t *testing.T) {
 
 	assert.Equal(t, false, kclConfig.EnableLeaseStealing)
 	assert.Equal(t, 5000, kclConfig.LeaseStealingIntervalMillis)
+	assert.Equal(t, 2000, kclConfig.LeaseAcquisitionIntervalMillis)
 
 	contextLogger := kclConfig.Logger.WithFields(logger.Fields{"key1": "value1"})
 	contextLogger.Debugf("Starting with default logger")

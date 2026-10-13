@@ -539,3 +539,77 @@ func TestCheckpointSequence_SAddError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shard registry add failed")
 }
+
+// An unassigned shard is skipped, not an error: the worker's normal lease path
+// picks it up, and rebalance decides on its own not to steal meanwhile.
+func TestListActiveWorkers_SkipsUnassignedShard(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+	cp.lastLeaseSync = time.Now() // use the in-memory view as given
+
+	owned := newShard("shard-001")
+	owned.SetCheckpoint("seq-100")
+	owned.SetLeaseOwner("worker-1")
+	free := newShard("shard-002")
+	free.SetCheckpoint("seq-200")
+
+	workers, err := cp.ListActiveWorkers(map[string]*par.ShardStatus{"shard-001": owned, "shard-002": free})
+	require.NoError(t, err)
+	assert.Len(t, workers, 1)
+	assert.Len(t, workers["worker-1"], 1)
+}
+
+// A shard leased by another worker that has not checkpointed yet must still
+// show its owner, or this worker sees it as free.
+func TestFetchCheckpoint_NoCheckpointStillReadsLeaseOwner(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+
+	timeout := time.Now().UTC().Add(time.Minute).Truncate(time.Millisecond)
+	mock.data[cp.shardKey("shard-001")] = map[string]string{
+		chk.LeaseOwnerKey:   "worker-2",
+		chk.LeaseTimeoutKey: timeout.Format(time.RFC3339Nano),
+	}
+
+	shard := newShard("shard-001")
+	err := cp.FetchCheckpoint(shard)
+	assert.True(t, errors.Is(err, chk.ErrSequenceIDNotFound))
+	assert.Equal(t, "worker-2", shard.GetLeaseOwner())
+	assert.True(t, timeout.Equal(shard.GetLeaseTimeout()))
+}
+
+// A lease released in Redis (graceful shutdown) clears the local owner, so a
+// gone worker is not counted as active.
+func TestSyncLeases_ClearsReleasedOwner(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+	cp.lastLeaseSync = time.Time{}
+
+	mock.sets[cp.registryKey()] = map[string]bool{"shard-001": true}
+	mock.data[cp.shardKey("shard-001")] = map[string]string{chk.SequenceNumberKey: "seq-100"}
+
+	shard := newShard("shard-001")
+	shard.SetLeaseOwner("worker-gone")
+
+	require.NoError(t, cp.syncLeases(map[string]*par.ShardStatus{"shard-001": shard}))
+	assert.Equal(t, "", shard.GetLeaseOwner())
+	assert.Equal(t, "seq-100", shard.GetCheckpoint())
+}
+
+// This worker's own lease is never cleared by a sync: its shard consumer owns
+// the renewal, and a cleared owner would make eventLoop lease the shard again
+// and start a second consumer for it.
+func TestSyncLeases_KeepsOwnLease(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+	cp.lastLeaseSync = time.Time{}
+
+	mock.sets[cp.registryKey()] = map[string]bool{"shard-001": true}
+	mock.data[cp.shardKey("shard-001")] = map[string]string{chk.SequenceNumberKey: "seq-100"}
+
+	shard := newShard("shard-001")
+	shard.SetLeaseOwner("worker-1") // newTestConfig's worker ID
+
+	require.NoError(t, cp.syncLeases(map[string]*par.ShardStatus{"shard-001": shard}))
+	assert.Equal(t, "worker-1", shard.GetLeaseOwner())
+}

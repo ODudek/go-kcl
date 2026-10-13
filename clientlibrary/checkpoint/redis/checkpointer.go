@@ -247,14 +247,8 @@ func (c *RedisCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
 		return fmt.Errorf("fetch checkpoint failed: %w", err)
 	}
 
-	sequenceID, ok := data[chk.SequenceNumberKey]
-	if !ok || sequenceID == "" {
-		return chk.ErrSequenceIDNotFound
-	}
-
-	c.log.Debugf("Retrieved Shard Iterator %s", sequenceID)
-	shard.SetCheckpoint(sequenceID)
-
+	// The lease is read before the checkpoint: a shard another worker has just
+	// leased has an owner but no checkpoint yet, and must not look free here.
 	if assignedTo, ok := data[chk.LeaseOwnerKey]; ok && assignedTo != "" {
 		shard.SetLeaseOwner(assignedTo)
 	}
@@ -266,6 +260,14 @@ func (c *RedisCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
 		}
 		shard.SetLeaseTimeout(t)
 	}
+
+	sequenceID, ok := data[chk.SequenceNumberKey]
+	if !ok || sequenceID == "" {
+		return chk.ErrSequenceIDNotFound
+	}
+
+	c.log.Debugf("Retrieved Shard Iterator %s", sequenceID)
+	shard.SetCheckpoint(sequenceID)
 
 	return nil
 }
@@ -336,10 +338,11 @@ func (c *RedisCheckpoint) ListActiveWorkers(shardStatus map[string]*par.ShardSta
 			continue
 		}
 
+		// A free shard has no worker to list; the caller sees it in shardStatus.
 		leaseOwner := shard.GetLeaseOwner()
 		if leaseOwner == "" {
-			c.log.Debugf("Shard Not Assigned Error. ShardID: %s, WorkerID: %s", shard.ID, c.kclConfig.WorkerID)
-			return nil, chk.ErrShardNotAssigned
+			c.log.Debugf("Shard not assigned, skipping. ShardID: %s, WorkerID: %s", shard.ID, c.kclConfig.WorkerID)
+			continue
 		}
 
 		workers[leaseOwner] = append(workers[leaseOwner], shard)
@@ -416,8 +419,12 @@ func (c *RedisCheckpoint) syncLeases(shardStatus map[string]*par.ShardStatus) er
 			continue
 		}
 
-		if assignedTo, found := data[chk.LeaseOwnerKey]; found && assignedTo != "" {
-			shard.SetLeaseOwner(assignedTo)
+		// An owner missing in Redis is a released lease (RemoveLeaseOwner on
+		// shutdown): clear it, or the gone worker keeps counting as active. This
+		// worker's own leases are left alone — their shard consumer renews them,
+		// and a cleared owner would make eventLoop lease the shard a second time.
+		if owner := data[chk.LeaseOwnerKey]; owner != "" || shard.GetLeaseOwner() != c.kclConfig.WorkerID {
+			shard.SetLeaseOwner(owner)
 		}
 		if checkpoint, found := data[chk.SequenceNumberKey]; found && checkpoint != "" {
 			shard.SetCheckpoint(checkpoint)
