@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-10-27
+
+### Changed
+
+- CI: `actions/checkout` v6 → v7, `actions/setup-go` v6 → v7, `securego/gosec` v2.22.11 → v2.30.0 (from Dependabot, [#15](https://github.com/ODudek/go-kcl/pull/15)). No change to the library.
+
 ## [0.6.0] - 2026-10-27
 
 Trims the dependencies the library linked into every application ([#12](https://github.com/ODudek/go-kcl/issues/12)). A polling consumer with the Redis checkpointer and an injected logger and Kinesis client no longer links `logrus`, `lumberjack`, `kinesis-aggregation`, `github.com/golang/protobuf`, the DynamoDB client, `aws-sdk-go-v2/config` and its credential chain, or `google/uuid`. See "Migrating to 0.6" in the README.
