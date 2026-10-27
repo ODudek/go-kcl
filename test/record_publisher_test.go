@@ -20,7 +20,6 @@ package test
 
 import (
 	"context"
-	"crypto/md5"
 	"fmt"
 	"sync"
 	"testing"
@@ -32,10 +31,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	rec "github.com/awslabs/kinesis-aggregation/go/v2/records"
-	"github.com/golang/protobuf/proto"
 
 	"github.com/ODudek/go-kcl/clientlibrary/utils"
+	"github.com/ODudek/go-kcl/internal/kpl"
 )
 
 const specstr = `{"name":"kube-qQyhk","networking":{"containerNetworkCidr":"10.2.0.0/16"},"orgName":"BVT-Org-cLQch","projectName":"project-tDSJd","serviceLevel":"DEVELOPER","size":{"count":1},"version":"1.8.1-4"}`
@@ -232,37 +230,13 @@ func publishAggregateRecord(t *testing.T, kc *kinesis.Client) {
 
 // generateAggregateRecord generates an aggregate record in the correct AWS-specified format used by KPL.
 // https://github.com/awslabs/amazon-kinesis-producer/blob/master/aggregation-format.md
-// copy from: https://github.com/awslabs/kinesis-aggregation/blob/master/go/deaggregator/deaggregator_test.go
 func generateAggregateRecord(numRecords int, content string) []byte {
-	aggr := &rec.AggregatedRecord{}
-	// Start with the magic header
-	aggRecord := []byte("\xf3\x89\x9a\xc2")
-	partKeyTable := make([]string, 0)
-
-	// Create proto record with numRecords length
+	records := make([]types.Record, 0, numRecords)
 	for i := 0; i < numRecords; i++ {
-		var partKey uint64
-		var hashKey uint64
-		partKey = uint64(i)
-		hashKey = uint64(i) * uint64(10)
-		r := &rec.Record{
-			PartitionKeyIndex:    &partKey,
-			ExplicitHashKeyIndex: &hashKey,
-			Data:                 []byte(content),
-			Tags:                 make([]*rec.Tag, 0),
-		}
-
-		aggr.Records = append(aggr.Records, r)
-		partKeyVal := fmt.Sprint(i)
-		partKeyTable = append(partKeyTable, partKeyVal)
+		records = append(records, types.Record{
+			PartitionKey: aws.String(fmt.Sprint(i)),
+			Data:         []byte(content),
+		})
 	}
-
-	aggr.PartitionKeyTable = partKeyTable
-	// Marshal to protobuf record, create md5 sum from proto record
-	// and append both to aggRecord with magic header
-	data, _ := proto.Marshal(aggr)
-	md5Hash := md5.Sum(data)
-	aggRecord = append(aggRecord, data...)
-	aggRecord = append(aggRecord, md5Hash[:]...)
-	return aggRecord
+	return kpl.Aggregate(records)
 }

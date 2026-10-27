@@ -28,13 +28,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	deagg "github.com/awslabs/kinesis-aggregation/go/v2/deaggregator"
 
 	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
 	"github.com/ODudek/go-kcl/clientlibrary/config"
 	kcl "github.com/ODudek/go-kcl/clientlibrary/interfaces"
 	"github.com/ODudek/go-kcl/clientlibrary/metrics"
 	par "github.com/ODudek/go-kcl/clientlibrary/partition"
+	"github.com/ODudek/go-kcl/internal/kpl"
 )
 
 type shardConsumer interface {
@@ -164,12 +164,11 @@ func (sc *commonShardConsumer) processRecords(getRecordsStartTime time.Time, rec
 
 	log.Debugf("Received %d original records.", len(records))
 
-	// De-aggregate the records if they were published by the KPL.
-	dars, err := deagg.DeaggregateRecords(records)
+	// De-aggregate the records if they were published by the KPL. A malformed
+	// aggregated record is passed to the record processor unchanged.
+	dars, err := kpl.Deaggregate(records)
 	if err != nil {
-		// The error is caused by bad KPL publisher and just skip the bad records
-		// instead of being stuck here.
-		log.Errorf("Error in de-aggregating KPL records: %+v", err)
+		log.Errorf("Error in de-aggregating KPL records from shard %s: %+v", sc.shard.ID, err)
 	}
 
 	input := &kcl.ProcessRecordsInput{
