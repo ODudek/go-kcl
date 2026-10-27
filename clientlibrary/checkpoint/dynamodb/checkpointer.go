@@ -42,7 +42,7 @@ const (
 	NumMaxRetries = 10
 )
 
-// DynamoCheckpoint implements the chk.Checkpointer interface using AWS DynamoDB as the backend.
+// DynamoCheckpoint implements the checkpoint.Checkpointer interface using AWS DynamoDB as the backend.
 // It manages lease acquisition via conditional PutItem operations, checkpoint persistence,
 // and optional lease stealing via claim requests.
 type DynamoCheckpoint struct {
@@ -58,8 +58,8 @@ type DynamoCheckpoint struct {
 	lastLeaseSync time.Time
 }
 
-// NewDynamoCheckpoint creates a DynamoDB-backed chk.Checkpointer from the given configuration.
-// Call Init to establish the connection and create the lease table if needed.
+// NewDynamoCheckpoint creates a DynamoDB-backed checkpoint.Checkpointer from the given configuration.
+// Set its client with WithDynamoDB; Init then creates the lease table if needed.
 func NewDynamoCheckpoint(kclConfig *config.KinesisClientLibConfiguration) *DynamoCheckpoint {
 	checkpointer := &DynamoCheckpoint{
 		log:                     kclConfig.Logger,
@@ -74,8 +74,8 @@ func NewDynamoCheckpoint(kclConfig *config.KinesisClientLibConfiguration) *Dynam
 	return checkpointer
 }
 
-// WithDynamoDB sets a custom DynamoDB client (useful for testing with mocks).
-// Returns the receiver for method chaining.
+// WithDynamoDB sets the DynamoDB client (required), e.g. a *dynamodb.Client
+// or a mock. Returns the receiver for method chaining.
 func (checkpointer *DynamoCheckpoint) WithDynamoDB(svc DynamoDBAPI) *DynamoCheckpoint {
 	checkpointer.svc = svc
 	return checkpointer

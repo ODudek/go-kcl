@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-10-27
+
+Trims the dependencies the library linked into every application ([#12](https://github.com/ODudek/go-kcl/issues/12)). A polling consumer with the Redis checkpointer and an injected logger and Kinesis client no longer links `logrus`, `lumberjack`, `kinesis-aggregation`, `github.com/golang/protobuf`, the DynamoDB client, `aws-sdk-go-v2/config` and its credential chain, or `google/uuid`. See "Migrating to 0.6" in the README.
+
+### Fixed
+
+- `renewLease` logged through the global logrus logger, so its lines (`Refreshing lease…`, `Error in refreshing lease…`) bypassed the configured logger's format, level and fields. It now uses `kclConfig.Logger`.
+- One malformed KPL aggregated record no longer drops its whole batch. The old deaggregator returned nothing for the batch when any record failed to parse, `ProcessRecords` was not called, and the next checkpoint skipped up to `MaxRecords` records, valid ones included. Each Kinesis record is now deaggregated on its own; a malformed one is passed to the processor unchanged and logged at error level.
+- A malformed KPL aggregated record whose partition key index is out of range no longer panics the shard consumer (and the process).
+- The default worker ID is a random version 4 UUID; the version 1 UUID it replaces embedded the host's MAC address.
+- `Panicf` of the logrus and zap adapters called `Fatalf` (exiting the process); it panics.
+- The zerolog adapter's `WithFields` dropped every field.
+- Two "max retry count" errors in the polling consumer were logged with an unformatted `message` string.
+
+### Changed
+
+- **Breaking:** `Worker.Start` requires a Kinesis client (`WithKinesis`) and a checkpointer (`WithCheckpointer`), and returns `ErrNoKinesisClient` / `ErrNoCheckpointer` without them. It no longer builds a default Kinesis client and DynamoDB checkpointer (which called `log.Fatalf` when the AWS config failed to load).
+- **Breaking:** `DynamoCheckpoint` moves from `clientlibrary/checkpoint` to `clientlibrary/checkpoint/dynamodb`. `Init` returns `ErrNoDynamoDBClient` when no client was set with `WithDynamoDB` instead of building one.
+- **Breaking:** the `logger` package holds only the `Logger` interface, `Fields`, `NewSlogLogger` and `GetDefaultLogger`, whose default is now `log/slog` (`slog.Default()`, looked up at each call). The logrus adapter moves to `logger/logrus`. Adapters wrap an already configured logger: `NewLogrusLoggerWithConfig`, `NewZapLoggerWithConfig`, `NewZerologLoggerWithConfig`, `logger.Configuration` and the level constants are removed, and `zerolog.NewZerologLogger` takes a `zerolog.Logger`. Log files are left to the application, so `lumberjack` is gone.
+- **Breaking:** Go 1.26 is required. Dependency floors are raised to current releases (aws-sdk-go-v2 1.47, client_golang 1.25, zap 1.28, zerolog 1.35, go-redis 9.23, protobuf 1.36).
+- KPL deaggregation is implemented in-repo on `google.golang.org/protobuf/encoding/protowire`, replacing `github.com/awslabs/kinesis-aggregation`.
+
+### Added
+
+- `clientlibrary/awsclients`: `NewKinesisClient` and `NewDynamoDBClient` build clients from the KCL configuration (region, credentials, endpoint) on the AWS SDK's default chain, with the same retryer as before and `BaseEndpoint` instead of the deprecated `EndpointResolverWithOptions`. Optional: only applications that import it link `aws-sdk-go-v2/config`.
+- `logger.NewSlogLogger` adapts a `*slog.Logger`.
+- CI runs `govulncheck`; Dependabot proposes weekly grouped updates of Go modules and GitHub Actions.
+
 ## [0.5.1] - 2026-10-27
 
 ### Fixed
