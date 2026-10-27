@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
+	"github.com/ODudek/go-kcl/clientlibrary/awsclients"
 	redischk "github.com/ODudek/go-kcl/clientlibrary/checkpoint/redis"
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	kc "github.com/ODudek/go-kcl/clientlibrary/interfaces"
@@ -48,7 +50,15 @@ func main() {
 		Password: redisPwd,
 	})
 
+	// Both apps read streams in the same region, so they can share one
+	// Kinesis client, here built from the SDK's default credential chain.
+	kinesisClient, err := awsclients.NewKinesisClient(context.Background(), ordersConfig)
+	if err != nil {
+		log.Fatalf("Failed to create Kinesis client: %v", err)
+	}
+
 	ordersWorker := wk.NewWorker(&logFactory{prefix: "orders"}, ordersConfig).
+		WithKinesis(kinesisClient).
 		WithCheckpointer(ordersCheckpointer)
 
 	// App 2: "events" — consumes the "events-stream"
@@ -68,6 +78,7 @@ func main() {
 	})
 
 	eventsWorker := wk.NewWorker(&logFactory{prefix: "events"}, eventsConfig).
+		WithKinesis(kinesisClient).
 		WithCheckpointer(eventsCheckpointer)
 
 	// Start both workers

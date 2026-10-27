@@ -29,7 +29,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/stretchr/testify/assert"
 
-	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	par "github.com/ODudek/go-kcl/clientlibrary/partition"
 	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
@@ -57,10 +56,11 @@ func TestWorkerInjectCheckpointer(t *testing.T) {
 	defer stop()
 
 	// custom checkpointer or a mock checkpointer.
-	checkpointer := chk.NewDynamoCheckpoint(kclConfig)
+	checkpointer := newDynamoCheckpoint(t, kclConfig)
 
 	// Inject a custom checkpointer into the worker.
 	worker := wk.NewWorker(recordProcessorFactory(t), kclConfig).
+		WithKinesis(kc).
 		WithCheckpointer(checkpointer)
 
 	err := worker.Start()
@@ -117,7 +117,8 @@ func TestWorkerInjectKinesis(t *testing.T) {
 
 	// Inject a custom checkpointer into the worker.
 	worker := wk.NewWorker(recordProcessorFactory(t), kclConfig).
-		WithKinesis(kc)
+		WithKinesis(kc).
+		WithCheckpointer(newDynamoCheckpoint(t, kclConfig))
 
 	err = worker.Start()
 	assert.Nil(t, err)
@@ -158,7 +159,7 @@ func TestWorkerInjectKinesisAndCheckpointer(t *testing.T) {
 	defer stop()
 
 	// custom checkpointer or a mock checkpointer.
-	checkpointer := chk.NewDynamoCheckpoint(kclConfig)
+	checkpointer := newDynamoCheckpoint(t, kclConfig)
 
 	// Inject both custom checkpointer and kinesis into the worker.
 	worker := wk.NewWorker(recordProcessorFactory(t), kclConfig).

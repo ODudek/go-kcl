@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/ODudek/go-kcl/clientlibrary/awsclients"
+	dynamochk "github.com/ODudek/go-kcl/clientlibrary/checkpoint/dynamodb"
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	kc "github.com/ODudek/go-kcl/clientlibrary/interfaces"
 	prommetrics "github.com/ODudek/go-kcl/clientlibrary/metrics/prometheus"
@@ -60,8 +63,21 @@ func main() {
 	// Attach the monitoring service to the worker config
 	kclConfig.WithMonitoringService(metricsService)
 
+	// Build the AWS clients from the SDK's default credential chain
+	ctx := context.Background()
+	kinesisClient, err := awsclients.NewKinesisClient(ctx, kclConfig)
+	if err != nil {
+		log.Fatalf("Failed to create Kinesis client: %v", err)
+	}
+	dynamoClient, err := awsclients.NewDynamoDBClient(ctx, kclConfig)
+	if err != nil {
+		log.Fatalf("Failed to create DynamoDB client: %v", err)
+	}
+
 	// Build and start the worker
-	worker := wk.NewWorker(&processorFactory{}, kclConfig)
+	worker := wk.NewWorker(&processorFactory{}, kclConfig).
+		WithKinesis(kinesisClient).
+		WithCheckpointer(dynamochk.NewDynamoCheckpoint(kclConfig).WithDynamoDB(dynamoClient))
 	if err := worker.Start(); err != nil {
 		log.Fatalf("Failed to start worker: %v", err)
 	}

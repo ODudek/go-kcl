@@ -35,7 +35,6 @@ import (
 	"github.com/ODudek/go-kcl/clientlibrary/metrics"
 	"github.com/ODudek/go-kcl/clientlibrary/metrics/cloudwatch"
 	"github.com/ODudek/go-kcl/clientlibrary/metrics/prometheus"
-	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
 )
 
 const (
@@ -205,7 +204,7 @@ func runTest(kclConfig *cfg.KinesisClientLibConfiguration, triggersig bool, t *t
 	stop := continuouslyPublishSomeData(t, kc)
 	defer stop()
 
-	worker := wk.NewWorker(recordProcessorFactory(t), kclConfig)
+	worker := newTestWorker(t, recordProcessorFactory(t), kclConfig)
 	err := worker.Start()
 	assert.Nil(t, err)
 

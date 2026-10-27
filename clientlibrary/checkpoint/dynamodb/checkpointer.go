@@ -17,7 +17,9 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package checkpoint
+// Package dynamodb implements the checkpoint.Checkpointer interface on an
+// Amazon DynamoDB lease table.
+package dynamodb
 
 import (
 	"context"
@@ -26,11 +28,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/retry"
-	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
+	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
 	"github.com/ODudek/go-kcl/clientlibrary/config"
 	par "github.com/ODudek/go-kcl/clientlibrary/partition"
 	"github.com/ODudek/go-kcl/logger"
@@ -41,7 +42,7 @@ const (
 	NumMaxRetries = 10
 )
 
-// DynamoCheckpoint implements the Checkpointer interface using AWS DynamoDB as the backend.
+// DynamoCheckpoint implements the chk.Checkpointer interface using AWS DynamoDB as the backend.
 // It manages lease acquisition via conditional PutItem operations, checkpoint persistence,
 // and optional lease stealing via claim requests.
 type DynamoCheckpoint struct {
@@ -57,7 +58,7 @@ type DynamoCheckpoint struct {
 	lastLeaseSync time.Time
 }
 
-// NewDynamoCheckpoint creates a DynamoDB-backed Checkpointer from the given configuration.
+// NewDynamoCheckpoint creates a DynamoDB-backed chk.Checkpointer from the given configuration.
 // Call Init to establish the connection and create the lease table if needed.
 func NewDynamoCheckpoint(kclConfig *config.KinesisClientLibConfiguration) *DynamoCheckpoint {
 	checkpointer := &DynamoCheckpoint{
@@ -80,39 +81,15 @@ func (checkpointer *DynamoCheckpoint) WithDynamoDB(svc DynamoDBAPI) *DynamoCheck
 	return checkpointer
 }
 
-// Init establishes a connection to DynamoDB and ensures the lease table exists.
-// If a custom DynamoDB service was set via WithDynamoDB, that service is used.
+// ErrNoDynamoDBClient is returned by Init when no DynamoDB client was set with
+// WithDynamoDB.
+var ErrNoDynamoDBClient = errors.New("no DynamoDB client: set one with WithDynamoDB (awsclients.NewDynamoDBClient builds one from the KCL configuration)")
+
+// Init ensures the lease table exists, through the DynamoDB client set with
+// WithDynamoDB.
 func (checkpointer *DynamoCheckpoint) Init() error {
-	checkpointer.log.Infof("Creating DynamoDB session")
-
 	if checkpointer.svc == nil {
-		resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			if service == dynamodb.ServiceID && len(checkpointer.kclConfig.DynamoDBEndpoint) > 0 {
-				return aws.Endpoint{
-					PartitionID:   "aws",
-					URL:           checkpointer.kclConfig.DynamoDBEndpoint,
-					SigningRegion: checkpointer.kclConfig.RegionName,
-				}, nil
-			}
-			// returning EndpointNotFoundError will allow the service to fallback to it's default resolution
-			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-		})
-
-		cfg, err := awsConfig.LoadDefaultConfig(
-			context.TODO(),
-			awsConfig.WithRegion(checkpointer.kclConfig.RegionName),
-			awsConfig.WithCredentialsProvider(checkpointer.kclConfig.DynamoDBCredentials),
-			awsConfig.WithEndpointResolverWithOptions(resolver),
-			awsConfig.WithRetryer(func() aws.Retryer {
-				return retry.AddWithMaxBackoffDelay(retry.NewStandard(), retry.DefaultMaxBackoff)
-			}),
-		)
-
-		if err != nil {
-			checkpointer.log.Fatalf("unable to load SDK config, %v", err)
-		}
-
-		checkpointer.svc = dynamodb.NewFromConfig(cfg)
+		return ErrNoDynamoDBClient
 	}
 
 	if !checkpointer.doesTableExist() {
@@ -135,18 +112,18 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 
 	var claimRequest string
 	if checkpointer.kclConfig.EnableLeaseStealing {
-		if currentCheckpointClaimRequest, ok := currentCheckpoint[ClaimRequestKey]; ok &&
+		if currentCheckpointClaimRequest, ok := currentCheckpoint[chk.ClaimRequestKey]; ok &&
 			currentCheckpointClaimRequest.(*types.AttributeValueMemberS).Value != "" {
 			claimRequest = currentCheckpointClaimRequest.(*types.AttributeValueMemberS).Value
 			if newAssignTo != claimRequest && !isClaimRequestExpired {
 				checkpointer.log.Debugf("another worker: %s has a claim on this shard. Not going to renew the lease", claimRequest)
-				return errors.New(ErrShardClaimed)
+				return errors.New(chk.ErrShardClaimed)
 			}
 		}
 	}
 
-	assignedVar, assignedToOk := currentCheckpoint[LeaseOwnerKey]
-	leaseVar, leaseTimeoutOk := currentCheckpoint[LeaseTimeoutKey]
+	assignedVar, assignedToOk := currentCheckpoint[chk.LeaseOwnerKey]
+	leaseVar, leaseTimeoutOk := currentCheckpoint[chk.LeaseTimeoutKey]
 
 	var conditionalExpression string
 	var expressionAttributeValues map[string]types.AttributeValue
@@ -164,11 +141,11 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 
 		if checkpointer.kclConfig.EnableLeaseStealing {
 			if time.Now().UTC().Before(currentLeaseTimeout) && assignedTo != newAssignTo && !isClaimRequestExpired {
-				return ErrLeaseNotAcquired{"current lease timeout not yet expired"}
+				return chk.ErrLeaseNotAcquired{Cause: "current lease timeout not yet expired"}
 			}
 		} else {
 			if time.Now().UTC().Before(currentLeaseTimeout) && assignedTo != newAssignTo {
-				return ErrLeaseNotAcquired{"current lease timeout not yet expired"}
+				return chk.ErrLeaseNotAcquired{Cause: "current lease timeout not yet expired"}
 			}
 		}
 
@@ -188,25 +165,25 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 	}
 
 	marshalledCheckpoint := map[string]types.AttributeValue{
-		LeaseKeyKey: &types.AttributeValueMemberS{
+		chk.LeaseKeyKey: &types.AttributeValueMemberS{
 			Value: shard.ID,
 		},
-		LeaseOwnerKey: &types.AttributeValueMemberS{
+		chk.LeaseOwnerKey: &types.AttributeValueMemberS{
 			Value: newAssignTo,
 		},
-		LeaseTimeoutKey: &types.AttributeValueMemberS{
+		chk.LeaseTimeoutKey: &types.AttributeValueMemberS{
 			Value: newLeaseTimeoutString,
 		},
 	}
 
 	if len(shard.ParentShardId) > 0 {
-		marshalledCheckpoint[ParentShardIdKey] = &types.AttributeValueMemberS{
+		marshalledCheckpoint[chk.ParentShardIdKey] = &types.AttributeValueMemberS{
 			Value: shard.ParentShardId,
 		}
 	}
 
 	if checkpoint := shard.GetCheckpoint(); checkpoint != "" {
-		marshalledCheckpoint[SequenceNumberKey] = &types.AttributeValueMemberS{
+		marshalledCheckpoint[chk.SequenceNumberKey] = &types.AttributeValueMemberS{
 			Value: checkpoint,
 		}
 	}
@@ -227,7 +204,7 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 	if err != nil {
 		var conditionalCheckErr *types.ConditionalCheckFailedException
 		if errors.As(err, &conditionalCheckErr) {
-			return ErrLeaseNotAcquired{conditionalCheckErr.ErrorMessage()}
+			return chk.ErrLeaseNotAcquired{Cause: conditionalCheckErr.ErrorMessage()}
 		}
 		return err
 	}
@@ -244,22 +221,22 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 func (checkpointer *DynamoCheckpoint) CheckpointSequence(shard *par.ShardStatus) error {
 	leaseTimeout := shard.GetLeaseTimeout().UTC().Format(time.RFC3339Nano)
 	marshalledCheckpoint := map[string]types.AttributeValue{
-		LeaseKeyKey: &types.AttributeValueMemberS{
+		chk.LeaseKeyKey: &types.AttributeValueMemberS{
 			Value: shard.ID,
 		},
-		SequenceNumberKey: &types.AttributeValueMemberS{
+		chk.SequenceNumberKey: &types.AttributeValueMemberS{
 			Value: shard.GetCheckpoint(),
 		},
-		LeaseOwnerKey: &types.AttributeValueMemberS{
+		chk.LeaseOwnerKey: &types.AttributeValueMemberS{
 			Value: shard.GetLeaseOwner(),
 		},
-		LeaseTimeoutKey: &types.AttributeValueMemberS{
+		chk.LeaseTimeoutKey: &types.AttributeValueMemberS{
 			Value: leaseTimeout,
 		},
 	}
 
 	if len(shard.ParentShardId) > 0 {
-		marshalledCheckpoint[ParentShardIdKey] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
+		marshalledCheckpoint[chk.ParentShardIdKey] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
 	}
 
 	return checkpointer.saveItem(marshalledCheckpoint)
@@ -274,12 +251,12 @@ func (checkpointer *DynamoCheckpoint) FetchCheckpoint(shard *par.ShardStatus) er
 
 	// The lease is read before the checkpoint: a shard another worker has just
 	// leased has an owner but no checkpoint yet, and must not look free here.
-	if assignedTo, ok := checkpoint[LeaseOwnerKey]; ok {
+	if assignedTo, ok := checkpoint[chk.LeaseOwnerKey]; ok {
 		shard.SetLeaseOwner(assignedTo.(*types.AttributeValueMemberS).Value)
 	}
 
 	// Use up-to-date leaseTimeout to avoid ConditionalCheckFailedException when claiming
-	if leaseTimeout, ok := checkpoint[LeaseTimeoutKey]; ok && leaseTimeout.(*types.AttributeValueMemberS).Value != "" {
+	if leaseTimeout, ok := checkpoint[chk.LeaseTimeoutKey]; ok && leaseTimeout.(*types.AttributeValueMemberS).Value != "" {
 		currentLeaseTimeout, err := time.Parse(time.RFC3339Nano, leaseTimeout.(*types.AttributeValueMemberS).Value)
 		if err != nil {
 			return err
@@ -287,9 +264,9 @@ func (checkpointer *DynamoCheckpoint) FetchCheckpoint(shard *par.ShardStatus) er
 		shard.LeaseTimeout = currentLeaseTimeout
 	}
 
-	sequenceID, ok := checkpoint[SequenceNumberKey]
+	sequenceID, ok := checkpoint[chk.SequenceNumberKey]
 	if !ok {
-		return ErrSequenceIDNotFound
+		return chk.ErrSequenceIDNotFound
 	}
 
 	checkpointer.log.Debugf("Retrieved Shard Iterator %s", sequenceID.(*types.AttributeValueMemberS).Value)
@@ -316,11 +293,11 @@ func (checkpointer *DynamoCheckpoint) RemoveLeaseOwner(shardID string) error {
 	input := &dynamodb.UpdateItemInput{
 		TableName: aws.String(checkpointer.TableName),
 		Key: map[string]types.AttributeValue{
-			LeaseKeyKey: &types.AttributeValueMemberS{
+			chk.LeaseKeyKey: &types.AttributeValueMemberS{
 				Value: shardID,
 			},
 		},
-		UpdateExpression: aws.String("remove " + LeaseOwnerKey),
+		UpdateExpression: aws.String("remove " + chk.LeaseOwnerKey),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":assigned_to": &types.AttributeValueMemberS{
 				Value: checkpointer.kclConfig.WorkerID,
@@ -341,10 +318,10 @@ func (checkpointer *DynamoCheckpoint) GetLeaseOwner(shardID string) (string, err
 		return "", err
 	}
 
-	assignedVar, assignedToOk := currentCheckpoint[LeaseOwnerKey]
+	assignedVar, assignedToOk := currentCheckpoint[chk.LeaseOwnerKey]
 
 	if !assignedToOk {
-		return "", ErrNoLeaseOwner
+		return "", chk.ErrNoLeaseOwner
 	}
 
 	return assignedVar.(*types.AttributeValueMemberS).Value, nil
@@ -360,7 +337,7 @@ func (checkpointer *DynamoCheckpoint) ListActiveWorkers(shardStatus map[string]*
 
 	workers := map[string][]*par.ShardStatus{}
 	for _, shard := range shardStatus {
-		if shard.GetCheckpoint() == ShardEnd {
+		if shard.GetCheckpoint() == chk.ShardEnd {
 			continue
 		}
 
@@ -383,7 +360,7 @@ func (checkpointer *DynamoCheckpoint) ListActiveWorkers(shardStatus map[string]*
 // ClaimShard places a claim request on a shard to signal a steal attempt
 func (checkpointer *DynamoCheckpoint) ClaimShard(shard *par.ShardStatus, claimID string) error {
 	err := checkpointer.FetchCheckpoint(shard)
-	if err != nil && err != ErrSequenceIDNotFound {
+	if err != nil && err != chk.ErrSequenceIDNotFound {
 		return err
 	}
 	leaseTimeoutString := shard.GetLeaseTimeout().Format(time.RFC3339Nano)
@@ -399,16 +376,16 @@ func (checkpointer *DynamoCheckpoint) ClaimShard(shard *par.ShardStatus, claimID
 	}
 
 	marshalledCheckpoint := map[string]types.AttributeValue{
-		LeaseKeyKey: &types.AttributeValueMemberS{
+		chk.LeaseKeyKey: &types.AttributeValueMemberS{
 			Value: shard.ID,
 		},
-		LeaseTimeoutKey: &types.AttributeValueMemberS{
+		chk.LeaseTimeoutKey: &types.AttributeValueMemberS{
 			Value: leaseTimeoutString,
 		},
-		SequenceNumberKey: &types.AttributeValueMemberS{
+		chk.SequenceNumberKey: &types.AttributeValueMemberS{
 			Value: shard.Checkpoint,
 		},
-		ClaimRequestKey: &types.AttributeValueMemberS{
+		chk.ClaimRequestKey: &types.AttributeValueMemberS{
 			Value: claimID,
 		},
 	}
@@ -416,16 +393,16 @@ func (checkpointer *DynamoCheckpoint) ClaimShard(shard *par.ShardStatus, claimID
 	if leaseOwner := shard.GetLeaseOwner(); leaseOwner == "" {
 		conditionalExpression += " AND attribute_not_exists(AssignedTo)"
 	} else {
-		marshalledCheckpoint[LeaseOwnerKey] = &types.AttributeValueMemberS{Value: leaseOwner}
+		marshalledCheckpoint[chk.LeaseOwnerKey] = &types.AttributeValueMemberS{Value: leaseOwner}
 		conditionalExpression += "AND AssignedTo = :assigned_to"
 		expressionAttributeValues[":assigned_to"] = &types.AttributeValueMemberS{Value: leaseOwner}
 	}
 
 	if checkpoint := shard.GetCheckpoint(); checkpoint == "" {
 		conditionalExpression += " AND attribute_not_exists(Checkpoint)"
-	} else if checkpoint == ShardEnd {
+	} else if checkpoint == chk.ShardEnd {
 		conditionalExpression += " AND Checkpoint <> :checkpoint"
-		expressionAttributeValues[":checkpoint"] = &types.AttributeValueMemberS{Value: ShardEnd}
+		expressionAttributeValues[":checkpoint"] = &types.AttributeValueMemberS{Value: chk.ShardEnd}
 	} else {
 		conditionalExpression += " AND Checkpoint = :checkpoint"
 		expressionAttributeValues[":checkpoint"] = &types.AttributeValueMemberS{Value: checkpoint}
@@ -434,7 +411,7 @@ func (checkpointer *DynamoCheckpoint) ClaimShard(shard *par.ShardStatus, claimID
 	if shard.ParentShardId == "" {
 		conditionalExpression += " AND attribute_not_exists(ParentShardId)"
 	} else {
-		marshalledCheckpoint[ParentShardIdKey] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
+		marshalledCheckpoint[chk.ParentShardIdKey] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
 		conditionalExpression += " AND ParentShardId = :parent_shard"
 		expressionAttributeValues[":parent_shard"] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
 	}
@@ -451,7 +428,7 @@ func (checkpointer *DynamoCheckpoint) syncLeases(shardStatus map[string]*par.Sha
 
 	checkpointer.lastLeaseSync = time.Now()
 	input := &dynamodb.ScanInput{
-		ProjectionExpression: aws.String(fmt.Sprintf("%s,%s,%s", LeaseKeyKey, LeaseOwnerKey, SequenceNumberKey)),
+		ProjectionExpression: aws.String(fmt.Sprintf("%s,%s,%s", chk.LeaseKeyKey, chk.LeaseOwnerKey, chk.SequenceNumberKey)),
 		Select:               "SPECIFIC_ATTRIBUTES",
 		TableName:            aws.String(checkpointer.kclConfig.TableName),
 	}
@@ -465,9 +442,9 @@ func (checkpointer *DynamoCheckpoint) syncLeases(shardStatus map[string]*par.Sha
 
 	results := scanOutput.Items
 	for _, result := range results {
-		shardId, foundShardId := result[LeaseKeyKey]
-		assignedTo, foundAssignedTo := result[LeaseOwnerKey]
-		checkpoint, foundCheckpoint := result[SequenceNumberKey]
+		shardId, foundShardId := result[chk.LeaseKeyKey]
+		assignedTo, foundAssignedTo := result[chk.LeaseOwnerKey]
+		checkpoint, foundCheckpoint := result[chk.SequenceNumberKey]
 		if !foundShardId || !foundAssignedTo || !foundCheckpoint {
 			continue
 		}
@@ -486,13 +463,13 @@ func (checkpointer *DynamoCheckpoint) createTable() error {
 	input := &dynamodb.CreateTableInput{
 		AttributeDefinitions: []types.AttributeDefinition{
 			{
-				AttributeName: aws.String(LeaseKeyKey),
+				AttributeName: aws.String(chk.LeaseKeyKey),
 				AttributeType: types.ScalarAttributeTypeS,
 			},
 		},
 		KeySchema: []types.KeySchemaElement{
 			{
-				AttributeName: aws.String(LeaseKeyKey),
+				AttributeName: aws.String(chk.LeaseKeyKey),
 				KeyType:       types.KeyTypeHash,
 			},
 		},
@@ -542,7 +519,7 @@ func (checkpointer *DynamoCheckpoint) getItem(shardID string) (map[string]types.
 		TableName:      aws.String(checkpointer.TableName),
 		ConsistentRead: aws.Bool(true),
 		Key: map[string]types.AttributeValue{
-			LeaseKeyKey: &types.AttributeValueMemberS{
+			chk.LeaseKeyKey: &types.AttributeValueMemberS{
 				Value: shardID,
 			},
 		},
@@ -560,7 +537,7 @@ func (checkpointer *DynamoCheckpoint) removeItem(shardID string) error {
 	_, err := checkpointer.svc.DeleteItem(context.Background(), &dynamodb.DeleteItemInput{
 		TableName: aws.String(checkpointer.TableName),
 		Key: map[string]types.AttributeValue{
-			LeaseKeyKey: &types.AttributeValueMemberS{
+			chk.LeaseKeyKey: &types.AttributeValueMemberS{
 				Value: shardID,
 			},
 		},

@@ -26,13 +26,16 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/retry"
-	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
 
+	"github.com/ODudek/go-kcl/clientlibrary/awsclients"
+	dynamochk "github.com/ODudek/go-kcl/clientlibrary/checkpoint/dynamodb"
+	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
+	kcl "github.com/ODudek/go-kcl/clientlibrary/interfaces"
 	"github.com/ODudek/go-kcl/clientlibrary/utils"
+	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
 	"github.com/ODudek/go-kcl/internal/kpl"
 )
 
@@ -40,60 +43,43 @@ const specstr = `{"name":"kube-qQyhk","networking":{"containerNetworkCidr":"10.2
 
 // NewKinesisClient to create a Kinesis Client.
 func NewKinesisClient(t *testing.T, regionName, endpoint string, creds aws.CredentialsProvider) *kinesis.Client {
-	// create session for Kinesis
-	t.Logf("Creating Kinesis client")
-
-	resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		return aws.Endpoint{
-			PartitionID:   "aws",
-			URL:           endpoint,
-			SigningRegion: regionName,
-		}, nil
-	})
-
-	cfg, err := awsConfig.LoadDefaultConfig(
-		context.TODO(),
-		awsConfig.WithRegion(regionName),
-		awsConfig.WithCredentialsProvider(creds),
-		awsConfig.WithEndpointResolverWithOptions(resolver),
-		awsConfig.WithRetryer(func() aws.Retryer {
-			return retry.AddWithMaxBackoffDelay(retry.NewStandard(), retry.DefaultMaxBackoff)
-		}),
-	)
-
+	t.Helper()
+	kclConfig := cfg.NewKinesisClientLibConfigWithCredential(appName, streamName, regionName, workerID, creds).
+		WithKinesisEndpoint(endpoint)
+	kc, err := awsclients.NewKinesisClient(context.TODO(), kclConfig)
 	if err != nil {
-		// no need to move forward
-		t.Fatalf("Failed in loading Kinesis default config for creating Worker: %+v", err)
+		t.Fatalf("Failed in creating Kinesis client: %+v", err)
 	}
-
-	return kinesis.NewFromConfig(cfg)
+	return kc
 }
 
-// NewDynamoDBClient to create a Kinesis Client.
+// NewDynamoDBClient to create a DynamoDB Client.
 func NewDynamoDBClient(t *testing.T, regionName, endpoint string, creds aws.CredentialsProvider) *dynamodb.Client {
-	resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		return aws.Endpoint{
-			PartitionID:   "aws",
-			URL:           endpoint,
-			SigningRegion: regionName,
-		}, nil
-	})
-
-	cfg, err := awsConfig.LoadDefaultConfig(
-		context.TODO(),
-		awsConfig.WithRegion(regionName),
-		awsConfig.WithCredentialsProvider(creds),
-		awsConfig.WithEndpointResolverWithOptions(resolver),
-		awsConfig.WithRetryer(func() aws.Retryer {
-			return retry.AddWithMaxBackoffDelay(retry.NewStandard(), retry.DefaultMaxBackoff)
-		}),
-	)
-
+	t.Helper()
+	kclConfig := cfg.NewKinesisClientLibConfigWithCredential(appName, streamName, regionName, workerID, creds).
+		WithDynamoDBEndpoint(endpoint)
+	dc, err := awsclients.NewDynamoDBClient(context.TODO(), kclConfig)
 	if err != nil {
-		t.Fatalf("unable to load SDK config, %v", err)
+		t.Fatalf("Failed in creating DynamoDB client: %+v", err)
 	}
+	return dc
+}
 
-	return dynamodb.NewFromConfig(cfg)
+// newDynamoCheckpoint returns a DynamoDB checkpointer for kclConfig.
+func newDynamoCheckpoint(t *testing.T, kclConfig *cfg.KinesisClientLibConfiguration) *dynamochk.DynamoCheckpoint {
+	t.Helper()
+	dc := NewDynamoDBClient(t, kclConfig.RegionName, kclConfig.DynamoDBEndpoint, kclConfig.DynamoDBCredentials)
+	return dynamochk.NewDynamoCheckpoint(kclConfig).WithDynamoDB(dc)
+}
+
+// newTestWorker returns a worker reading through a Kinesis client and
+// checkpointing to DynamoDB, both built from kclConfig.
+func newTestWorker(t *testing.T, factory kcl.IRecordProcessorFactory, kclConfig *cfg.KinesisClientLibConfiguration) *wk.Worker {
+	t.Helper()
+	kc := NewKinesisClient(t, kclConfig.RegionName, kclConfig.KinesisEndpoint, kclConfig.KinesisCredentials)
+	return wk.NewWorker(factory, kclConfig).
+		WithKinesis(kc).
+		WithCheckpointer(newDynamoCheckpoint(t, kclConfig))
 }
 
 func continuouslyPublishSomeData(t *testing.T, kc *kinesis.Client) func() {

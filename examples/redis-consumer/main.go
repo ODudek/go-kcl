@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
+	"github.com/ODudek/go-kcl/clientlibrary/awsclients"
 	redischk "github.com/ODudek/go-kcl/clientlibrary/checkpoint/redis"
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	kc "github.com/ODudek/go-kcl/clientlibrary/interfaces"
@@ -37,16 +39,24 @@ func main() {
 		DB:       0,
 	})
 
-	// 3. Build the worker with the Redis checkpointer
+	// 3. Build the Kinesis client from the SDK's default credential chain.
+	// A *kinesis.Client you build yourself works as well.
+	kinesisClient, err := awsclients.NewKinesisClient(context.Background(), kclConfig)
+	if err != nil {
+		log.Fatalf("Failed to create Kinesis client: %v", err)
+	}
+
+	// 4. Build the worker with the Redis checkpointer
 	worker := wk.NewWorker(&processorFactory{}, kclConfig).
+		WithKinesis(kinesisClient).
 		WithCheckpointer(checkpointer)
 
-	// 4. Start consuming
+	// 5. Start consuming
 	if err := worker.Start(); err != nil {
 		log.Fatalf("Failed to start worker: %v", err)
 	}
 
-	// 5. Graceful shutdown on SIGINT/SIGTERM
+	// 6. Graceful shutdown on SIGINT/SIGTERM
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigs

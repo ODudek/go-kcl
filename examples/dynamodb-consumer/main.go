@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
+	"github.com/ODudek/go-kcl/clientlibrary/awsclients"
+	dynamochk "github.com/ODudek/go-kcl/clientlibrary/checkpoint/dynamodb"
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	kc "github.com/ODudek/go-kcl/clientlibrary/interfaces"
 	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
@@ -18,9 +21,6 @@ func main() {
 	log := logger.GetDefaultLogger()
 
 	// 1. Configure KCL
-	//
-	// DynamoDB is the default checkpointer — the worker creates the lease table
-	// automatically (table name defaults to ApplicationName).
 	kclConfig := cfg.NewKinesisClientLibConfig(
 		"my-app",    // applicationName (also used as DynamoDB table name)
 		"my-stream", // streamName
@@ -32,15 +32,30 @@ func main() {
 		WithFailoverTimeMillis(10000).
 		WithLogger(log)
 
-	// 2. Build the worker — DynamoDB checkpointer is used by default
-	worker := wk.NewWorker(&processorFactory{}, kclConfig)
+	// 2. Build the AWS clients from the SDK's default credential chain.
+	// Clients you build yourself work as well.
+	ctx := context.Background()
+	kinesisClient, err := awsclients.NewKinesisClient(ctx, kclConfig)
+	if err != nil {
+		log.Fatalf("Failed to create Kinesis client: %v", err)
+	}
+	dynamoClient, err := awsclients.NewDynamoDBClient(ctx, kclConfig)
+	if err != nil {
+		log.Fatalf("Failed to create DynamoDB client: %v", err)
+	}
 
-	// 3. Start consuming
+	// 3. Build the worker with a DynamoDB checkpointer. It creates the lease
+	// table if missing (table name defaults to ApplicationName).
+	worker := wk.NewWorker(&processorFactory{}, kclConfig).
+		WithKinesis(kinesisClient).
+		WithCheckpointer(dynamochk.NewDynamoCheckpoint(kclConfig).WithDynamoDB(dynamoClient))
+
+	// 4. Start consuming
 	if err := worker.Start(); err != nil {
 		log.Fatalf("Failed to start worker: %v", err)
 	}
 
-	// 4. Graceful shutdown on SIGINT/SIGTERM
+	// 5. Graceful shutdown on SIGINT/SIGTERM
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigs
@@ -91,13 +106,7 @@ func (p *recordProcessor) Shutdown(input *kc.ShutdownInput) {
 	}
 }
 
-// To use a custom DynamoDB endpoint (e.g. localstack):
+// To use custom endpoints (e.g. localstack), set them before building the clients:
 //
-//   kclConfig.WithDynamoDBEndpoint("http://localhost:4566")
-//
-// To inject a custom DynamoDB client:
-//
-//   import chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
-//
-//   checkpointer := chk.NewDynamoCheckpoint(kclConfig).WithDynamoDB(dynamoClient)
-//   worker := wk.NewWorker(factory, kclConfig).WithCheckpointer(checkpointer)
+//   kclConfig.WithKinesisEndpoint("http://localhost:4566").
+//       WithDynamoDBEndpoint("http://localhost:4566")
