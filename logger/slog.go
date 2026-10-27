@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"sort"
+	"time"
 )
 
 // slogLogger adapts a *slog.Logger to Logger. A nil logger means
-// slog.Default() at the time of each call.
+// slog.Default() at the time of each call; fields added by WithFields are
+// then applied to that default too.
 type slogLogger struct {
 	logger *slog.Logger
+	fields []interface{}
 }
 
 // NewSlogLogger adapts an existing slog logger to the Logger interface.
@@ -21,20 +25,31 @@ func NewSlogLogger(logger *slog.Logger) Logger {
 }
 
 func (l *slogLogger) get() *slog.Logger {
-	if l.logger == nil {
+	if l.logger != nil {
+		return l.logger
+	}
+	if len(l.fields) == 0 {
 		return slog.Default()
 	}
-	return l.logger
+	return slog.Default().With(l.fields...)
 }
 
+// log writes a record attributed to the caller of the Logger method, and
+// returns its message. Messages at error level are always formatted, for
+// Panicf.
 func (l *slogLogger) log(level slog.Level, format string, args []interface{}) string {
 	logger := l.get()
 	ctx := context.Background()
-	if !logger.Enabled(ctx, level) && level < slog.LevelError {
+	enabled := logger.Enabled(ctx, level)
+	if !enabled && level < slog.LevelError {
 		return ""
 	}
 	msg := fmt.Sprintf(format, args...)
-	logger.Log(ctx, level, msg)
+	if enabled {
+		var pcs [1]uintptr
+		runtime.Callers(3, pcs[:]) // skip Callers, log and the Logger method
+		_ = logger.Handler().Handle(ctx, slog.NewRecord(time.Now(), level, msg, pcs[0]))
+	}
 	return msg
 }
 
@@ -76,5 +91,8 @@ func (l *slogLogger) WithFields(fields Fields) Logger {
 	for _, k := range keys {
 		args = append(args, k, fields[k])
 	}
-	return &slogLogger{logger: l.get().With(args...)}
+	if l.logger == nil {
+		return &slogLogger{fields: append(append([]interface{}{}, l.fields...), args...)}
+	}
+	return &slogLogger{logger: l.logger.With(args...)}
 }

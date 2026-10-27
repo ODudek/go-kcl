@@ -50,3 +50,30 @@ func TestGetDefaultLogger_FollowsTheCurrentSlogDefault(t *testing.T) {
 
 	assert.Contains(t, buf.String(), `"msg":"visible 2"`)
 }
+
+// Fields added to the default logger before slog.SetDefault go to the new
+// default as well.
+func TestGetDefaultLogger_WithFieldsFollowsTheCurrentSlogDefault(t *testing.T) {
+	log := GetDefaultLogger().WithFields(Fields{"shard": "s1"}).WithFields(Fields{"worker": "w1"})
+
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(newJSONSlog(&buf, slog.LevelInfo))
+	defer slog.SetDefault(previous)
+
+	log.Infof("lease renewed")
+
+	assert.Contains(t, buf.String(), `"msg":"lease renewed","shard":"s1","worker":"w1"`)
+}
+
+// With AddSource, the record points at the code that called the Logger, not
+// at this adapter.
+func TestSlogLogger_ReportsTheCallerAsSource(t *testing.T) {
+	var buf bytes.Buffer
+	log := NewSlogLogger(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{AddSource: true})))
+
+	log.Infof("hello")
+
+	assert.Contains(t, buf.String(), `slog_test.go"`)
+	assert.NotContains(t, buf.String(), `logger/slog.go"`)
+}

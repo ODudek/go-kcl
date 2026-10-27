@@ -173,7 +173,9 @@ Records written by the Kinesis Producer Library in its
 deaggregated before `ProcessRecords`: each user record keeps the sequence number, arrival time and encryption type of
 the Kinesis record that carried it. Other records are passed through unchanged. An aggregated record that is
 malformed (it has the KPL header and a valid checksum but does not parse) is passed to `ProcessRecords` unchanged and
-logged at error level; the rest of the batch is unaffected.
+logged at error level; the rest of the batch is unaffected. Such a record's `Data` still starts with the KPL magic
+bytes `F3 89 9A C2`: a processor that cannot decode it should skip it rather than return an error, or the shard is
+retried from its checkpoint on that batch forever.
 
 ## Prometheus Metrics
 
@@ -271,6 +273,12 @@ func (p *myProcessor) ProcessRecords(input *kc.ProcessRecordsInput) error {
 | `logger.NewLogrusLogger(l)` | `logrus.NewLogrusLogger(l)` in `logger/logrus` |
 | `logger.NewLogrusLoggerWithConfig`, `zap.NewZapLoggerWithConfig`, `zerolog.NewZerologLoggerWithConfig`, `logger.Configuration` | Configure the logger yourself and wrap it: `NewLogrusLogger`, `NewZapLogger`, `NewZerologLogger(zerolog.Logger)`, `logger.NewSlogLogger` |
 | `logger.GetDefaultLogger()` was logrus | It is `log/slog` (`slog.Default()`) |
+
+The AWS SDK is raised from 1.25 to 1.47. Since DynamoDB client 1.36, when the credentials carry an account ID (SSO,
+assumed roles, web identity, `AWS_ACCOUNT_ID`) and no `DynamoDBEndpoint` is set, requests go to the account-based
+endpoint `https://<account-id>.ddb.<region>.amazonaws.com` instead of `dynamodb.<region>.amazonaws.com`. If an egress
+proxy or firewall allows only the old host name, allow the new one or set `AWS_ACCOUNT_ID_ENDPOINT_MODE=disabled`
+(or `AccountIDEndpointMode` on your client).
 
 ## Documentation
 

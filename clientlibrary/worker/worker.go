@@ -49,7 +49,6 @@ import (
 // the shards).
 type Worker struct {
 	streamName  string
-	regionName  string
 	workerID    string
 	consumerARN string
 
@@ -98,7 +97,6 @@ func NewWorker(factory kcl.IRecordProcessorFactory, kclConfig *config.KinesisCli
 
 	return &Worker{
 		streamName:       kclConfig.StreamName,
-		regionName:       kclConfig.RegionName,
 		workerID:         kclConfig.WorkerID,
 		processorFactory: factory,
 		kclConfig:        kclConfig,

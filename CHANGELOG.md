@@ -24,13 +24,14 @@ Trims the dependencies the library linked into every application ([#12](https://
 - **Breaking:** `Worker.Start` requires a Kinesis client (`WithKinesis`) and a checkpointer (`WithCheckpointer`), and returns `ErrNoKinesisClient` / `ErrNoCheckpointer` without them. It no longer builds a default Kinesis client and DynamoDB checkpointer (which called `log.Fatalf` when the AWS config failed to load).
 - **Breaking:** `DynamoCheckpoint` moves from `clientlibrary/checkpoint` to `clientlibrary/checkpoint/dynamodb`. `Init` returns `ErrNoDynamoDBClient` when no client was set with `WithDynamoDB` instead of building one.
 - **Breaking:** the `logger` package holds only the `Logger` interface, `Fields`, `NewSlogLogger` and `GetDefaultLogger`, whose default is now `log/slog` (`slog.Default()`, looked up at each call). The logrus adapter moves to `logger/logrus`. Adapters wrap an already configured logger: `NewLogrusLoggerWithConfig`, `NewZapLoggerWithConfig`, `NewZerologLoggerWithConfig`, `logger.Configuration` and the level constants are removed, and `zerolog.NewZerologLogger` takes a `zerolog.Logger`. Log files are left to the application, so `lumberjack` is gone.
-- **Breaking:** Go 1.26 is required. Dependency floors are raised to current releases (aws-sdk-go-v2 1.47, client_golang 1.25, zap 1.28, zerolog 1.35, go-redis 9.23, protobuf 1.36).
+- **Breaking:** Go 1.26 is required. Dependency floors are raised to current releases (aws-sdk-go-v2 1.47, client_golang 1.25, zap 1.28, zerolog 1.35, go-redis 9.23, protobuf 1.36). With the DynamoDB client past 1.36, credentials that carry an account ID make DynamoDB requests go to `<account-id>.ddb.<region>.amazonaws.com`; allow that host in egress filters or set `AWS_ACCOUNT_ID_ENDPOINT_MODE=disabled`.
+- A malformed KPL aggregated record reaches `ProcessRecords` with its raw `Data`, starting with the KPL magic `F3 89 9A C2`; a processor that returns an error for it keeps the shard retrying that batch, so skip such records.
 - KPL deaggregation is implemented in-repo on `google.golang.org/protobuf/encoding/protowire`, replacing `github.com/awslabs/kinesis-aggregation`.
 
 ### Added
 
 - `clientlibrary/awsclients`: `NewKinesisClient` and `NewDynamoDBClient` build clients from the KCL configuration (region, credentials, endpoint) on the AWS SDK's default chain, with the same retryer as before and `BaseEndpoint` instead of the deprecated `EndpointResolverWithOptions`. Optional: only applications that import it link `aws-sdk-go-v2/config`.
-- `logger.NewSlogLogger` adapts a `*slog.Logger`.
+- `logger.NewSlogLogger` adapts a `*slog.Logger`; records carry the caller's source location, and fields added to the default logger follow a later `slog.SetDefault`.
 - CI runs `govulncheck`; Dependabot proposes weekly grouped updates of Go modules and GitHub Actions.
 
 ## [0.5.1] - 2026-10-27
