@@ -326,6 +326,11 @@ func (sc *PollingShardConsumer) renewLease(ctx context.Context) error {
 			log.Debugf("Refreshing lease on shard: %s for worker: %s", sc.shard.ID, sc.consumerID)
 			err := sc.checkpointer.GetLease(sc.shard, sc.consumerID)
 			if err != nil {
+				if sc.canRetryLeaseRenewal(err, time.Now().Add(renewDuration)) {
+					log.Warnf("Error in refreshing lease on shard: %s for worker: %s, retrying while the lease is held. Error: %+v",
+						sc.shard.ID, sc.consumerID, err)
+					continue
+				}
 				// log and return error
 				log.Errorf("Error in refreshing lease on shard: %s for worker: %s. Error: %+v",
 					sc.shard.ID, sc.consumerID, err)
