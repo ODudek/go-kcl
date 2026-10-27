@@ -26,13 +26,15 @@
 // The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 //
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-package checkpoint
+package dynamodb
 
 import (
 	"context"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
 )
 
 type mockDynamoDB struct {
@@ -62,28 +64,28 @@ func (m *mockDynamoDB) CreateTable(ctx context.Context, params *dynamodb.CreateT
 func (m *mockDynamoDB) PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
 	item := params.Item
 
-	if shardID, ok := item[LeaseKeyKey]; ok {
-		m.item[LeaseKeyKey] = shardID
+	if shardID, ok := item[chk.LeaseKeyKey]; ok {
+		m.item[chk.LeaseKeyKey] = shardID
 	}
 
-	if owner, ok := item[LeaseOwnerKey]; ok {
-		m.item[LeaseOwnerKey] = owner
+	if owner, ok := item[chk.LeaseOwnerKey]; ok {
+		m.item[chk.LeaseOwnerKey] = owner
 	}
 
-	if timeout, ok := item[LeaseTimeoutKey]; ok {
-		m.item[LeaseTimeoutKey] = timeout
+	if timeout, ok := item[chk.LeaseTimeoutKey]; ok {
+		m.item[chk.LeaseTimeoutKey] = timeout
 	}
 
-	if checkpoint, ok := item[SequenceNumberKey]; ok {
-		m.item[SequenceNumberKey] = checkpoint
+	if checkpoint, ok := item[chk.SequenceNumberKey]; ok {
+		m.item[chk.SequenceNumberKey] = checkpoint
 	}
 
-	if parent, ok := item[ParentShardIdKey]; ok {
-		m.item[ParentShardIdKey] = parent
+	if parent, ok := item[chk.ParentShardIdKey]; ok {
+		m.item[chk.ParentShardIdKey] = parent
 	}
 
-	if claimRequest, ok := item[ClaimRequestKey]; ok {
-		m.item[ClaimRequestKey] = claimRequest
+	if claimRequest, ok := item[chk.ClaimRequestKey]; ok {
+		m.item[chk.ClaimRequestKey] = claimRequest
 	}
 
 	if params.ConditionExpression != nil {
@@ -104,8 +106,8 @@ func (m *mockDynamoDB) GetItem(ctx context.Context, params *dynamodb.GetItemInpu
 func (m *mockDynamoDB) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 	exp := params.UpdateExpression
 
-	if aws.ToString(exp) == "remove "+LeaseOwnerKey {
-		delete(m.item, LeaseOwnerKey)
+	if aws.ToString(exp) == "remove "+chk.LeaseOwnerKey {
+		delete(m.item, chk.LeaseOwnerKey)
 	}
 
 	return nil, nil

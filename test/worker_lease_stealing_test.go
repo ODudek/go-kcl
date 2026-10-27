@@ -1,7 +1,7 @@
 package test
 
 import (
-	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
+	"log/slog"
 	"testing"
 
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
@@ -34,17 +34,7 @@ func newLeaseStealingWorkerFactory(t *testing.T) *leaseStealingWorkerFactory {
 }
 
 func (wf *leaseStealingWorkerFactory) CreateKCLConfig(workerID string, config *TestClusterConfig) *cfg.KinesisClientLibConfiguration {
-	log := logger.NewLogrusLoggerWithConfig(logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Error,
-		ConsoleJSONFormat: false,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	})
-
-	log.WithFields(logger.Fields{"worker": workerID})
+	log := newTestLogger(slog.LevelError).WithFields(logger.Fields{"worker": workerID})
 
 	return cfg.NewKinesisClientLibConfig(config.appName, config.streamName, config.regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).
@@ -56,8 +46,7 @@ func (wf *leaseStealingWorkerFactory) CreateKCLConfig(workerID string, config *T
 }
 
 func (wf *leaseStealingWorkerFactory) CreateWorker(_ string, kclConfig *cfg.KinesisClientLibConfiguration) *wk.Worker {
-	worker := wk.NewWorker(recordProcessorFactory(wf.t), kclConfig)
-	return worker
+	return newTestWorker(wf.t, recordProcessorFactory(wf.t), kclConfig)
 }
 
 func TestLeaseStealingInjectCheckpointer(t *testing.T) {
@@ -88,8 +77,7 @@ func newleaseStealingWorkerFactoryCustomChk(t *testing.T) *leaseStealingWorkerFa
 
 func (wfc *leaseStealingWorkerFactoryCustom) CreateWorker(workerID string, kclConfig *cfg.KinesisClientLibConfiguration) *wk.Worker {
 	worker := wfc.leaseStealingWorkerFactory.CreateWorker(workerID, kclConfig)
-	checkpointer := chk.NewDynamoCheckpoint(kclConfig)
-	return worker.WithCheckpointer(checkpointer)
+	return worker.WithCheckpointer(newDynamoCheckpoint(wfc.t, kclConfig))
 }
 
 func TestLeaseStealingWithMaxLeasesForWorker(t *testing.T) {

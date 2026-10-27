@@ -20,82 +20,66 @@ package test
 
 import (
 	"context"
-	"crypto/md5"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/retry"
-	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
-	rec "github.com/awslabs/kinesis-aggregation/go/v2/records"
-	"github.com/golang/protobuf/proto"
 
+	"github.com/ODudek/go-kcl/clientlibrary/awsclients"
+	dynamochk "github.com/ODudek/go-kcl/clientlibrary/checkpoint/dynamodb"
+	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
+	kcl "github.com/ODudek/go-kcl/clientlibrary/interfaces"
 	"github.com/ODudek/go-kcl/clientlibrary/utils"
+	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
+	"github.com/ODudek/go-kcl/internal/kpl"
 )
 
 const specstr = `{"name":"kube-qQyhk","networking":{"containerNetworkCidr":"10.2.0.0/16"},"orgName":"BVT-Org-cLQch","projectName":"project-tDSJd","serviceLevel":"DEVELOPER","size":{"count":1},"version":"1.8.1-4"}`
 
 // NewKinesisClient to create a Kinesis Client.
 func NewKinesisClient(t *testing.T, regionName, endpoint string, creds aws.CredentialsProvider) *kinesis.Client {
-	// create session for Kinesis
-	t.Logf("Creating Kinesis client")
-
-	resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		return aws.Endpoint{
-			PartitionID:   "aws",
-			URL:           endpoint,
-			SigningRegion: regionName,
-		}, nil
-	})
-
-	cfg, err := awsConfig.LoadDefaultConfig(
-		context.TODO(),
-		awsConfig.WithRegion(regionName),
-		awsConfig.WithCredentialsProvider(creds),
-		awsConfig.WithEndpointResolverWithOptions(resolver),
-		awsConfig.WithRetryer(func() aws.Retryer {
-			return retry.AddWithMaxBackoffDelay(retry.NewStandard(), retry.DefaultMaxBackoff)
-		}),
-	)
-
+	t.Helper()
+	kclConfig := cfg.NewKinesisClientLibConfigWithCredential(appName, streamName, regionName, workerID, creds).
+		WithKinesisEndpoint(endpoint)
+	kc, err := awsclients.NewKinesisClient(context.TODO(), kclConfig)
 	if err != nil {
-		// no need to move forward
-		t.Fatalf("Failed in loading Kinesis default config for creating Worker: %+v", err)
+		t.Fatalf("Failed in creating Kinesis client: %+v", err)
 	}
-
-	return kinesis.NewFromConfig(cfg)
+	return kc
 }
 
-// NewDynamoDBClient to create a Kinesis Client.
+// NewDynamoDBClient to create a DynamoDB Client.
 func NewDynamoDBClient(t *testing.T, regionName, endpoint string, creds aws.CredentialsProvider) *dynamodb.Client {
-	resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		return aws.Endpoint{
-			PartitionID:   "aws",
-			URL:           endpoint,
-			SigningRegion: regionName,
-		}, nil
-	})
-
-	cfg, err := awsConfig.LoadDefaultConfig(
-		context.TODO(),
-		awsConfig.WithRegion(regionName),
-		awsConfig.WithCredentialsProvider(creds),
-		awsConfig.WithEndpointResolverWithOptions(resolver),
-		awsConfig.WithRetryer(func() aws.Retryer {
-			return retry.AddWithMaxBackoffDelay(retry.NewStandard(), retry.DefaultMaxBackoff)
-		}),
-	)
-
+	t.Helper()
+	kclConfig := cfg.NewKinesisClientLibConfigWithCredential(appName, streamName, regionName, workerID, creds).
+		WithDynamoDBEndpoint(endpoint)
+	dc, err := awsclients.NewDynamoDBClient(context.TODO(), kclConfig)
 	if err != nil {
-		t.Fatalf("unable to load SDK config, %v", err)
+		t.Fatalf("Failed in creating DynamoDB client: %+v", err)
 	}
+	return dc
+}
 
-	return dynamodb.NewFromConfig(cfg)
+// newDynamoCheckpoint returns a DynamoDB checkpointer for kclConfig.
+func newDynamoCheckpoint(t *testing.T, kclConfig *cfg.KinesisClientLibConfiguration) *dynamochk.DynamoCheckpoint {
+	t.Helper()
+	dc := NewDynamoDBClient(t, kclConfig.RegionName, kclConfig.DynamoDBEndpoint, kclConfig.DynamoDBCredentials)
+	return dynamochk.NewDynamoCheckpoint(kclConfig).WithDynamoDB(dc)
+}
+
+// newTestWorker returns a worker reading through a Kinesis client and
+// checkpointing to DynamoDB, both built from kclConfig.
+func newTestWorker(t *testing.T, factory kcl.IRecordProcessorFactory, kclConfig *cfg.KinesisClientLibConfiguration) *wk.Worker {
+	t.Helper()
+	kc := NewKinesisClient(t, kclConfig.RegionName, kclConfig.KinesisEndpoint, kclConfig.KinesisCredentials)
+	return wk.NewWorker(factory, kclConfig).
+		WithKinesis(kc).
+		WithCheckpointer(newDynamoCheckpoint(t, kclConfig))
 }
 
 func continuouslyPublishSomeData(t *testing.T, kc *kinesis.Client) func() {
@@ -232,37 +216,13 @@ func publishAggregateRecord(t *testing.T, kc *kinesis.Client) {
 
 // generateAggregateRecord generates an aggregate record in the correct AWS-specified format used by KPL.
 // https://github.com/awslabs/amazon-kinesis-producer/blob/master/aggregation-format.md
-// copy from: https://github.com/awslabs/kinesis-aggregation/blob/master/go/deaggregator/deaggregator_test.go
 func generateAggregateRecord(numRecords int, content string) []byte {
-	aggr := &rec.AggregatedRecord{}
-	// Start with the magic header
-	aggRecord := []byte("\xf3\x89\x9a\xc2")
-	partKeyTable := make([]string, 0)
-
-	// Create proto record with numRecords length
+	records := make([]types.Record, 0, numRecords)
 	for i := 0; i < numRecords; i++ {
-		var partKey uint64
-		var hashKey uint64
-		partKey = uint64(i)
-		hashKey = uint64(i) * uint64(10)
-		r := &rec.Record{
-			PartitionKeyIndex:    &partKey,
-			ExplicitHashKeyIndex: &hashKey,
-			Data:                 []byte(content),
-			Tags:                 make([]*rec.Tag, 0),
-		}
-
-		aggr.Records = append(aggr.Records, r)
-		partKeyVal := fmt.Sprint(i)
-		partKeyTable = append(partKeyTable, partKeyVal)
+		records = append(records, types.Record{
+			PartitionKey: aws.String(fmt.Sprint(i)),
+			Data:         []byte(content),
+		})
 	}
-
-	aggr.PartitionKeyTable = partKeyTable
-	// Marshal to protobuf record, create md5 sum from proto record
-	// and append both to aggRecord with magic header
-	data, _ := proto.Marshal(aggr)
-	md5Hash := md5.Sum(data)
-	aggRecord = append(aggRecord, data...)
-	aggRecord = append(aggRecord, md5Hash[:]...)
-	return aggRecord
+	return kpl.Aggregate(records)
 }

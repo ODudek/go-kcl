@@ -3,37 +3,32 @@ package zap_test
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	uzap "go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
+
 	"github.com/ODudek/go-kcl/logger"
 	"github.com/ODudek/go-kcl/logger/zap"
-	"github.com/stretchr/testify/assert"
-	uzap "go.uber.org/zap"
 )
 
-func TestZapLoggerWithConfig(t *testing.T) {
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Debug,
-		ConsoleJSONFormat: true,
-		EnableFile:        false,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	}
+func TestZapLogger_WritesThroughTheGivenLogger(t *testing.T) {
+	core, logs := observer.New(zapcore.InfoLevel)
+	log := zap.NewZapLogger(uzap.New(core).Sugar()).WithFields(logger.Fields{"shard": "s1"})
 
-	log := zap.NewZapLoggerWithConfig(config)
+	log.Debugf("hidden %d", 1)
+	log.Infof("lease %s", "renewed")
 
-	contextLogger := log.WithFields(logger.Fields{"key1": "value1"})
-	contextLogger.Debugf("Starting with zap")
-	contextLogger.Infof("Zap is awesome")
+	require.Equal(t, 1, logs.Len())
+	entry := logs.All()[0]
+	assert.Equal(t, "lease renewed", entry.Message)
+	assert.Equal(t, "s1", entry.ContextMap()["shard"])
 }
 
-func TestZapLogger(t *testing.T) {
-	zapLogger, err := uzap.NewProduction()
-	assert.Nil(t, err)
+func TestZapLogger_PanicfPanics(t *testing.T) {
+	core, _ := observer.New(zapcore.InfoLevel)
+	log := zap.NewZapLogger(uzap.New(core).Sugar())
 
-	log := zap.NewZapLogger(zapLogger.Sugar())
-
-	contextLogger := log.WithFields(logger.Fields{"key1": "value1"})
-	contextLogger.Debugf("Starting with zap")
-	contextLogger.Infof("Zap is awesome")
+	assert.Panics(t, func() { log.Panicf("boom") })
 }

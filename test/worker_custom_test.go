@@ -20,15 +20,13 @@ package test
 
 import (
 	"context"
-	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
-	"os"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
@@ -43,8 +41,7 @@ func TestWorkerInjectCheckpointer(t *testing.T) {
 		WithMaxLeasesForWorker(1).
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000)
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	kclConfig.WithLogger(newTestLogger(slog.LevelDebug))
 
 	assert.Equal(t, regionName, kclConfig.RegionName)
 	assert.Equal(t, streamName, kclConfig.StreamName)
@@ -59,10 +56,11 @@ func TestWorkerInjectCheckpointer(t *testing.T) {
 	defer stop()
 
 	// custom checkpointer or a mock checkpointer.
-	checkpointer := chk.NewDynamoCheckpoint(kclConfig)
+	checkpointer := newDynamoCheckpoint(t, kclConfig)
 
 	// Inject a custom checkpointer into the worker.
 	worker := wk.NewWorker(recordProcessorFactory(t), kclConfig).
+		WithKinesis(kc).
 		WithCheckpointer(checkpointer)
 
 	err := worker.Start()
@@ -96,8 +94,7 @@ func TestWorkerInjectKinesis(t *testing.T) {
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000)
 
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	kclConfig.WithLogger(newTestLogger(slog.LevelDebug))
 
 	assert.Equal(t, regionName, kclConfig.RegionName)
 	assert.Equal(t, streamName, kclConfig.StreamName)
@@ -120,7 +117,8 @@ func TestWorkerInjectKinesis(t *testing.T) {
 
 	// Inject a custom checkpointer into the worker.
 	worker := wk.NewWorker(recordProcessorFactory(t), kclConfig).
-		WithKinesis(kc)
+		WithKinesis(kc).
+		WithCheckpointer(newDynamoCheckpoint(t, kclConfig))
 
 	err = worker.Start()
 	assert.Nil(t, err)
@@ -138,8 +136,7 @@ func TestWorkerInjectKinesisAndCheckpointer(t *testing.T) {
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000)
 
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	kclConfig.WithLogger(newTestLogger(slog.LevelDebug))
 
 	assert.Equal(t, regionName, kclConfig.RegionName)
 	assert.Equal(t, streamName, kclConfig.StreamName)
@@ -162,7 +159,7 @@ func TestWorkerInjectKinesisAndCheckpointer(t *testing.T) {
 	defer stop()
 
 	// custom checkpointer or a mock checkpointer.
-	checkpointer := chk.NewDynamoCheckpoint(kclConfig)
+	checkpointer := newDynamoCheckpoint(t, kclConfig)
 
 	// Inject both custom checkpointer and kinesis into the worker.
 	worker := wk.NewWorker(recordProcessorFactory(t), kclConfig).

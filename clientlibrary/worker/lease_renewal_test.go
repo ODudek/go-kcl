@@ -1,8 +1,10 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/ODudek/go-kcl/clientlibrary/config"
 	"github.com/ODudek/go-kcl/clientlibrary/metrics"
 	par "github.com/ODudek/go-kcl/clientlibrary/partition"
+	"github.com/ODudek/go-kcl/logger"
 )
 
 var errStoreTimeout = errors.New("getLease script error: context deadline exceeded")
@@ -73,6 +76,21 @@ func TestRenewLease_GivesUpWhenTheLeaseExpiresBeforeTheNextAttempt(t *testing.T)
 
 	assert.ErrorIs(t, sc.renewLease(ctx), errStoreTimeout)
 	assert.Equal(t, 1, cp.calls)
+}
+
+// Issue #12: renewLease logged through the global logrus logger, so its lines
+// bypassed the configured logger's format, level and fields.
+func TestRenewLease_LogsThroughTheConfiguredLogger(t *testing.T) {
+	var buf bytes.Buffer
+	cp := &renewalCheckpointer{errs: []error{errStoreTimeout}}
+	sc := newRenewingConsumer(cp, time.Now())
+	sc.kclConfig.WithLogger(logger.NewSlogLogger(slog.New(slog.NewJSONHandler(&buf, nil))))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_ = sc.renewLease(ctx)
+
+	assert.Contains(t, buf.String(), `"level":"ERROR","msg":"Error in refreshing lease on shard: s1`)
 }
 
 func TestRenewLease_StopsAtOnceWhenTheLeaseIsLost(t *testing.T) {

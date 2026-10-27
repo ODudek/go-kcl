@@ -35,8 +35,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/retry"
-	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 
 	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
@@ -51,7 +49,6 @@ import (
 // the shards).
 type Worker struct {
 	streamName  string
-	regionName  string
 	workerID    string
 	consumerARN string
 
@@ -79,7 +76,18 @@ type Worker struct {
 	consumers   map[string]bool
 }
 
+var (
+	// ErrNoKinesisClient is returned by Start when no Kinesis client was set
+	// with WithKinesis.
+	ErrNoKinesisClient = errors.New("no Kinesis client: set one with WithKinesis (awsclients.NewKinesisClient builds one from the KCL configuration)")
+	// ErrNoCheckpointer is returned by Start when no checkpointer was set with
+	// WithCheckpointer.
+	ErrNoCheckpointer = errors.New("no checkpointer: set one with WithCheckpointer (checkpoint/redis or checkpoint/dynamodb)")
+)
+
 // NewWorker constructs a Worker instance for processing Kinesis stream data.
+// Set its Kinesis client with WithKinesis and its checkpointer with
+// WithCheckpointer before calling Start.
 func NewWorker(factory kcl.IRecordProcessorFactory, kclConfig *config.KinesisClientLibConfiguration) *Worker {
 	mService := kclConfig.MonitoringService
 	if mService == nil {
@@ -89,7 +97,6 @@ func NewWorker(factory kcl.IRecordProcessorFactory, kclConfig *config.KinesisCli
 
 	return &Worker{
 		streamName:       kclConfig.StreamName,
-		regionName:       kclConfig.RegionName,
 		workerID:         kclConfig.WorkerID,
 		processorFactory: factory,
 		kclConfig:        kclConfig,
@@ -99,15 +106,15 @@ func NewWorker(factory kcl.IRecordProcessorFactory, kclConfig *config.KinesisCli
 	}
 }
 
-// WithKinesis provides a custom Kinesis service client for testing or alternative configurations.
+// WithKinesis sets the Kinesis client the worker reads through (required).
 // Returns the Worker for method chaining.
 func (w *Worker) WithKinesis(svc *kinesis.Client) *Worker {
 	w.kc = svc
 	return w
 }
 
-// WithCheckpointer provides a custom checkpointer implementation (e.g. Redis backend or test mock).
-// If not set, a DynamoDB-backed checkpointer is created during Start.
+// WithCheckpointer sets the checkpointer that stores leases and checkpoints
+// (required), e.g. from checkpoint/redis or checkpoint/dynamodb.
 // Returns the Worker for method chaining.
 func (w *Worker) WithCheckpointer(checker chk.Checkpointer) *Worker {
 	w.checkpointer = checker
@@ -161,48 +168,11 @@ func (w *Worker) initialize() error {
 	log := w.kclConfig.Logger
 	log.Infof("Worker initialization in progress...")
 
-	// Create default Kinesis client
 	if w.kc == nil {
-		// create session for Kinesis
-		log.Infof("Creating Kinesis client")
-
-		resolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-			if service == kinesis.ServiceID && len(w.kclConfig.KinesisEndpoint) > 0 {
-				return aws.Endpoint{
-					PartitionID:   "aws",
-					URL:           w.kclConfig.KinesisEndpoint,
-					SigningRegion: w.regionName,
-				}, nil
-			}
-			// returning EndpointNotFoundError will allow the service to fallback to it's default resolution
-			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
-		})
-
-		cfg, err := awsConfig.LoadDefaultConfig(
-			context.TODO(),
-			awsConfig.WithRegion(w.regionName),
-			awsConfig.WithCredentialsProvider(w.kclConfig.KinesisCredentials),
-			awsConfig.WithEndpointResolverWithOptions(resolver),
-			awsConfig.WithRetryer(func() aws.Retryer {
-				return retry.AddWithMaxBackoffDelay(retry.NewStandard(), retry.DefaultMaxBackoff)
-			}),
-		)
-
-		if err != nil {
-			// no need to move forward
-			log.Fatalf("Failed in loading Kinesis default config for creating Worker: %+v", err)
-		}
-		w.kc = kinesis.NewFromConfig(cfg)
-	} else {
-		log.Infof("Use custom Kinesis service.")
+		return ErrNoKinesisClient
 	}
-
-	// Create default dynamodb based checkpointer implementation
 	if w.checkpointer == nil {
-		log.Infof("Creating DynamoDB based checkpointer")
-		w.checkpointer = chk.NewDynamoCheckpoint(w.kclConfig)
-	} else {
-		log.Infof("Use custom checkpointer implementation.")
+		return ErrNoCheckpointer
 	}
 
 	if w.kclConfig.EnableEnhancedFanOutConsumer {

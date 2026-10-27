@@ -25,7 +25,7 @@
 // The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 //
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-package checkpoint
+package dynamodb
 
 import (
 	"context"
@@ -39,6 +39,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/stretchr/testify/assert"
 
+	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	par "github.com/ODudek/go-kcl/clientlibrary/partition"
 )
@@ -59,6 +60,15 @@ func TestDoesTableExist(t *testing.T) {
 		t.Error("Table does not exist but returned true")
 	}
 }
+
+func TestInit_RequiresADynamoDBClient(t *testing.T) {
+	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
+
+	assert.ErrorIs(t, NewDynamoCheckpoint(kclConfig).Init(), ErrNoDynamoDBClient)
+}
+
+// A DynamoCheckpoint is a checkpoint.Checkpointer.
+var _ chk.Checkpointer = (*DynamoCheckpoint)(nil)
 
 func TestGetLeaseNotAcquired(t *testing.T) {
 	svc := &mockDynamoDB{tableExist: true, item: map[string]types.AttributeValue{}}
@@ -86,7 +96,7 @@ func TestGetLeaseNotAcquired(t *testing.T) {
 		Mux:        &sync.RWMutex{},
 	}, "ijkl-mnop")
 
-	if err == nil || !errors.As(err, &ErrLeaseNotAcquired{}) {
+	if err == nil || !errors.As(err, &chk.ErrLeaseNotAcquired{}) {
 		t.Errorf("Got a lease when it was already held by abcd-efgh: %s", err)
 	}
 }
@@ -103,16 +113,16 @@ func TestGetLeaseAquired(t *testing.T) {
 	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(svc)
 	_ = checkpoint.Init()
 	marshalledCheckpoint := map[string]types.AttributeValue{
-		LeaseKeyKey: &types.AttributeValueMemberS{
+		chk.LeaseKeyKey: &types.AttributeValueMemberS{
 			Value: "0001",
 		},
-		LeaseOwnerKey: &types.AttributeValueMemberS{
+		chk.LeaseOwnerKey: &types.AttributeValueMemberS{
 			Value: "abcd-efgh",
 		},
-		LeaseTimeoutKey: &types.AttributeValueMemberS{
+		chk.LeaseTimeoutKey: &types.AttributeValueMemberS{
 			Value: time.Now().AddDate(0, -1, 0).UTC().Format(time.RFC3339),
 		},
-		SequenceNumberKey: &types.AttributeValueMemberS{
+		chk.SequenceNumberKey: &types.AttributeValueMemberS{
 			Value: "deadbeef",
 		},
 	}
@@ -133,7 +143,7 @@ func TestGetLeaseAquired(t *testing.T) {
 		t.Errorf("Lease not aquired after timeout %s", err)
 	}
 
-	id, ok := svc.item[SequenceNumberKey]
+	id, ok := svc.item[chk.SequenceNumberKey]
 	if !ok {
 		t.Error("Expected checkpoint to be set by GetLease")
 	} else if id.(*types.AttributeValueMemberS).Value != "deadbeef" {
@@ -163,8 +173,8 @@ func TestGetLeaseShardClaimed(t *testing.T) {
 	svc := &mockDynamoDB{
 		tableExist: true,
 		item: map[string]types.AttributeValue{
-			ClaimRequestKey: &types.AttributeValueMemberS{Value: "ijkl-mnop"},
-			LeaseTimeoutKey: &types.AttributeValueMemberS{Value: leaseTimeout.Format(time.RFC3339)},
+			chk.ClaimRequestKey: &types.AttributeValueMemberS{Value: "ijkl-mnop"},
+			chk.LeaseTimeoutKey: &types.AttributeValueMemberS{Value: leaseTimeout.Format(time.RFC3339)},
 		},
 	}
 	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc").
@@ -183,7 +193,7 @@ func TestGetLeaseShardClaimed(t *testing.T) {
 		LeaseTimeout: leaseTimeout,
 		Mux:          &sync.RWMutex{},
 	}, "abcd-efgh")
-	if err == nil || err.Error() != ErrShardClaimed {
+	if err == nil || err.Error() != chk.ErrShardClaimed {
 		t.Errorf("Got a lease when it was already claimed by by ijkl-mnop: %s", err)
 	}
 
@@ -216,9 +226,9 @@ func TestGetLeaseClaimRequestExpiredOwner(t *testing.T) {
 	svc := &mockDynamoDB{
 		tableExist: true,
 		item: map[string]types.AttributeValue{
-			LeaseOwnerKey:   &types.AttributeValueMemberS{Value: "abcd-efgh"},
-			ClaimRequestKey: &types.AttributeValueMemberS{Value: "ijkl-mnop"},
-			LeaseTimeoutKey: &types.AttributeValueMemberS{Value: leaseTimeout.Format(time.RFC3339)},
+			chk.LeaseOwnerKey:   &types.AttributeValueMemberS{Value: "abcd-efgh"},
+			chk.ClaimRequestKey: &types.AttributeValueMemberS{Value: "ijkl-mnop"},
+			chk.LeaseTimeoutKey: &types.AttributeValueMemberS{Value: leaseTimeout.Format(time.RFC3339)},
 		},
 	}
 
@@ -230,7 +240,7 @@ func TestGetLeaseClaimRequestExpiredOwner(t *testing.T) {
 		LeaseTimeout: leaseTimeout,
 		Mux:          &sync.RWMutex{},
 	}, "abcd-efgh")
-	if err == nil || err.Error() != ErrShardClaimed {
+	if err == nil || err.Error() != chk.ErrShardClaimed {
 		t.Errorf("Got a lease when it was already claimed by ijkl-mnop: %s", err)
 	}
 }
@@ -253,9 +263,9 @@ func TestGetLeaseClaimRequestExpiredClaimer(t *testing.T) {
 	svc := &mockDynamoDB{
 		tableExist: true,
 		item: map[string]types.AttributeValue{
-			LeaseOwnerKey:   &types.AttributeValueMemberS{Value: "abcd-efgh"},
-			ClaimRequestKey: &types.AttributeValueMemberS{Value: "ijkl-mnop"},
-			LeaseTimeoutKey: &types.AttributeValueMemberS{Value: leaseTimeout.Format(time.RFC3339)},
+			chk.LeaseOwnerKey:   &types.AttributeValueMemberS{Value: "abcd-efgh"},
+			chk.ClaimRequestKey: &types.AttributeValueMemberS{Value: "ijkl-mnop"},
+			chk.LeaseTimeoutKey: &types.AttributeValueMemberS{Value: leaseTimeout.Format(time.RFC3339)},
 		},
 	}
 
@@ -267,7 +277,7 @@ func TestGetLeaseClaimRequestExpiredClaimer(t *testing.T) {
 		LeaseTimeout: leaseTimeout,
 		Mux:          &sync.RWMutex{},
 	}, "ijkl-mnop")
-	if err == nil || !errors.As(err, &ErrLeaseNotAcquired{}) {
+	if err == nil || !errors.As(err, &chk.ErrLeaseNotAcquired{}) {
 		t.Errorf("Got a lease when it was already claimed by ijkl-mnop: %s", err)
 	}
 }
@@ -278,9 +288,9 @@ func TestFetchCheckpointWithStealing(t *testing.T) {
 	svc := &mockDynamoDB{
 		tableExist: true,
 		item: map[string]types.AttributeValue{
-			SequenceNumberKey: &types.AttributeValueMemberS{Value: "deadbeef"},
-			LeaseOwnerKey:     &types.AttributeValueMemberS{Value: "abcd-efgh"},
-			LeaseTimeoutKey: &types.AttributeValueMemberS{
+			chk.SequenceNumberKey: &types.AttributeValueMemberS{Value: "deadbeef"},
+			chk.LeaseOwnerKey:     &types.AttributeValueMemberS{Value: "abcd-efgh"},
+			chk.LeaseTimeoutKey: &types.AttributeValueMemberS{
 				Value: future.Format(time.RFC3339),
 			},
 		},
@@ -306,7 +316,7 @@ func TestFetchCheckpointWithStealing(t *testing.T) {
 
 	_ = checkpoint.FetchCheckpoint(status)
 
-	leaseTimeout, _ := time.Parse(time.RFC3339, svc.item[LeaseTimeoutKey].(*types.AttributeValueMemberS).Value)
+	leaseTimeout, _ := time.Parse(time.RFC3339, svc.item[chk.LeaseTimeoutKey].(*types.AttributeValueMemberS).Value)
 	assert.Equal(t, leaseTimeout, status.LeaseTimeout)
 }
 
@@ -323,19 +333,19 @@ func TestGetLeaseConditional(t *testing.T) {
 	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(svc)
 	_ = checkpoint.Init()
 	marshalledCheckpoint := map[string]types.AttributeValue{
-		LeaseKeyKey: &types.AttributeValueMemberS{
+		chk.LeaseKeyKey: &types.AttributeValueMemberS{
 			Value: "0001",
 		},
-		LeaseOwnerKey: &types.AttributeValueMemberS{
+		chk.LeaseOwnerKey: &types.AttributeValueMemberS{
 			Value: "abcd-efgh",
 		},
-		LeaseTimeoutKey: &types.AttributeValueMemberS{
+		chk.LeaseTimeoutKey: &types.AttributeValueMemberS{
 			Value: time.Now().Add(-1 * time.Second).UTC().Format(time.RFC3339),
 		},
-		SequenceNumberKey: &types.AttributeValueMemberS{
+		chk.SequenceNumberKey: &types.AttributeValueMemberS{
 			Value: "deadbeef",
 		},
-		ClaimRequestKey: &types.AttributeValueMemberS{
+		chk.ClaimRequestKey: &types.AttributeValueMemberS{
 			Value: "ijkl-mnop",
 		},
 	}
@@ -386,7 +396,7 @@ func TestListActiveWorkers(t *testing.T) {
 		"0007": {ID: "0007", AssignedTo: "worker_0", Checkpoint: "", Mux: &sync.RWMutex{}},
 		"0008": {ID: "0008", AssignedTo: "worker_4", Checkpoint: "", Mux: &sync.RWMutex{}},
 		"0009": {ID: "0009", AssignedTo: "worker_2", Checkpoint: "", Mux: &sync.RWMutex{}},
-		"0010": {ID: "0010", AssignedTo: "worker_0", Checkpoint: ShardEnd, Mux: &sync.RWMutex{}},
+		"0010": {ID: "0010", AssignedTo: "worker_0", Checkpoint: chk.ShardEnd, Mux: &sync.RWMutex{}},
 	}
 
 	workers, err := checkpoint.ListActiveWorkers(shardStatus)
@@ -407,9 +417,9 @@ func TestListActiveWorkers(t *testing.T) {
 func TestFetchCheckpointWithoutCheckpointStillReadsLeaseOwner(t *testing.T) {
 	timeout := time.Now().UTC().Add(time.Minute).Truncate(time.Millisecond)
 	svc := &mockDynamoDB{tableExist: true, item: map[string]types.AttributeValue{
-		LeaseKeyKey:     &types.AttributeValueMemberS{Value: "0000"},
-		LeaseOwnerKey:   &types.AttributeValueMemberS{Value: "other-worker"},
-		LeaseTimeoutKey: &types.AttributeValueMemberS{Value: timeout.Format(time.RFC3339Nano)},
+		chk.LeaseKeyKey:     &types.AttributeValueMemberS{Value: "0000"},
+		chk.LeaseOwnerKey:   &types.AttributeValueMemberS{Value: "other-worker"},
+		chk.LeaseTimeoutKey: &types.AttributeValueMemberS{Value: timeout.Format(time.RFC3339Nano)},
 	}}
 	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
 	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(svc)
@@ -417,7 +427,7 @@ func TestFetchCheckpointWithoutCheckpointStillReadsLeaseOwner(t *testing.T) {
 	shard := &par.ShardStatus{ID: "0000", Mux: &sync.RWMutex{}}
 	err := checkpoint.FetchCheckpoint(shard)
 
-	assert.Equal(t, ErrSequenceIDNotFound, err)
+	assert.Equal(t, chk.ErrSequenceIDNotFound, err)
 	assert.Equal(t, "other-worker", shard.GetLeaseOwner())
 	assert.True(t, timeout.Equal(shard.GetLeaseTimeout()))
 }
@@ -492,7 +502,7 @@ func TestClaimShard(t *testing.T) {
 		t.Errorf("Shard not claimed %s", err)
 	}
 
-	claimRequest, ok := svc.item[ClaimRequestKey]
+	claimRequest, ok := svc.item[chk.ClaimRequestKey]
 	if !ok {
 		t.Error("Expected claimRequest to be set by ClaimShard")
 	} else if claimRequest.(*types.AttributeValueMemberS).Value != "ijkl-mnop" {

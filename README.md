@@ -17,8 +17,8 @@ KDS Java API libraries.
 
 ### Prerequisites
 
+* `Go 1.26` or newer.
 * [aws-sdk-go-v2](https://github.com/aws/aws-sdk-go-v2)
-* The v2 SDK requires a minimum version of `Go 1.21`.
 * [gosec](https://github.com/securego/gosec)
 
 ### Build & Run
@@ -31,38 +31,63 @@ KDS Java API libraries.
 3. Test
     > `make test`
 
-## Checkpointer Backends
+## Building a Worker
 
-Go-KCL uses a pluggable `Checkpointer` interface for lease management and progress tracking. You can swap backends via `worker.WithCheckpointer()`.
+A worker needs a Kinesis client and a checkpointer, both set explicitly; `Start` returns
+`worker.ErrNoKinesisClient` or `worker.ErrNoCheckpointer` when one is missing. The library does not build AWS
+clients itself, so an application links only the AWS packages it uses.
 
-### DynamoDB (default)
-
-The default backend. No extra setup needed — the worker creates its own DynamoDB client and lease table automatically. The table name defaults to `ApplicationName`.
+Pass any `*kinesis.Client` you build, or let the optional `awsclients` package build one from the KCL
+configuration (region, credentials, `WithKinesisEndpoint`) on top of the AWS SDK's default credential chain:
 
 ```go
 import (
+    "github.com/ODudek/go-kcl/clientlibrary/awsclients"
     cfg "github.com/ODudek/go-kcl/clientlibrary/config"
     wk  "github.com/ODudek/go-kcl/clientlibrary/worker"
 )
 
 kclConfig := cfg.NewKinesisClientLibConfig("my-app", "my-stream", "us-east-1", "worker-1")
-worker := wk.NewWorker(factory, kclConfig)
+
+kinesisClient, err := awsclients.NewKinesisClient(ctx, kclConfig)
+if err != nil {
+    return err
+}
+
+worker := wk.NewWorker(factory, kclConfig).
+    WithKinesis(kinesisClient).
+    WithCheckpointer(checkpointer) // see Checkpointer Backends
 ```
 
-You can point to a custom DynamoDB endpoint (e.g. LocalStack):
+`awsclients` links `aws-sdk-go-v2/config` and its credential providers; skip it if you already build AWS clients.
+
+## Checkpointer Backends
+
+Go-KCL uses a pluggable `Checkpointer` interface for lease management and progress tracking, set with
+`worker.WithCheckpointer()`.
+
+### DynamoDB
+
+The checkpointer creates its lease table if missing. The table name defaults to `ApplicationName`.
+
+```go
+import (
+    "github.com/ODudek/go-kcl/clientlibrary/awsclients"
+    dynamochk "github.com/ODudek/go-kcl/clientlibrary/checkpoint/dynamodb"
+)
+
+dynamoClient, err := awsclients.NewDynamoDBClient(ctx, kclConfig) // or your own DynamoDB client
+if err != nil {
+    return err
+}
+
+checkpointer := dynamochk.NewDynamoCheckpoint(kclConfig).WithDynamoDB(dynamoClient)
+```
+
+For a custom endpoint (e.g. LocalStack), set it before building the client:
 
 ```go
 kclConfig.WithDynamoDBEndpoint("http://localhost:4566")
-```
-
-Or inject a pre-configured DynamoDB checkpointer:
-
-```go
-import chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
-
-checkpointer := chk.NewDynamoCheckpoint(kclConfig).WithDynamoDB(dynamoClient)
-worker := wk.NewWorker(factory, kclConfig).
-    WithCheckpointer(checkpointer)
 ```
 
 ### Redis
@@ -87,6 +112,7 @@ checkpointer := redischk.NewRedisCheckpoint(kclConfig, redischk.RedisConfig{
 })
 
 worker := wk.NewWorker(factory, kclConfig).
+    WithKinesis(kinesisClient).
     WithCheckpointer(checkpointer)
 ```
 
@@ -123,6 +149,31 @@ kcl:events:shard:shardId-000000000001
 - Lease stealing support (same as DynamoDB backend)
 - Sub-millisecond latency for all operations
 - All `Checkpointer` interface methods supported
+
+## Logging
+
+The KCL logs through the `logger.Logger` interface, set with `kclConfig.WithLogger()`. The default writes to
+`slog.Default()` (looked up at each call, so `slog.SetDefault` takes effect even after the config was created).
+Adapters wrap a logger you have already configured:
+
+| Logger | Constructor |
+|---|---|
+| `log/slog` | `logger.NewSlogLogger(*slog.Logger)` |
+| [zap](https://github.com/uber-go/zap) | `zap.NewZapLogger(*zap.SugaredLogger)` from `logger/zap` (only applications importing it link zap) |
+
+For any other logger, implement the `logger.Logger` interface. Log files and their rotation are left to the
+application's logger.
+
+## KPL Aggregation
+
+Records written by the Kinesis Producer Library in its
+[aggregated format](https://github.com/awslabs/amazon-kinesis-producer/blob/master/aggregation-format.md) are
+deaggregated before `ProcessRecords`: each user record keeps the sequence number, arrival time and encryption type of
+the Kinesis record that carried it. Other records are passed through unchanged. An aggregated record that is
+malformed (it has the KPL header and a valid checksum but does not parse) is passed to `ProcessRecords` unchanged and
+logged at error level; the rest of the batch is unaffected. Such a record's `Data` still starts with the KPL magic
+bytes `F3 89 9A C2`: a processor that cannot decode it should skip it rather than return an error, or the shard is
+retried from its checkpoint on that batch forever.
 
 ## Prometheus Metrics
 
@@ -167,7 +218,7 @@ kclConfig.WithMonitoringService(metricsService)
 |---|---|
 | `WithListenAddress(addr)` | Address for the standalone metrics server (default `:8080`) |
 | `WithRegion(region)` | AWS region label |
-| `WithLogger(l)` | Custom logger (defaults to Logrus standard logger) |
+| `WithLogger(l)` | Custom logger (defaults to `logger.GetDefaultLogger()`, on `log/slog`) |
 | `WithRegistry(reg)` | Use a custom `*prometheus.Registry`; disables the built-in server |
 | `WithRegisterer(r)` | Use a custom `prometheus.Registerer`; disables the built-in server |
 
@@ -177,7 +228,7 @@ Working examples are available in the [`examples/`](examples/) directory:
 
 | Example | Backend | Description |
 |---|---|---|
-| [`dynamodb-consumer`](examples/dynamodb-consumer/) | DynamoDB | Basic Kinesis consumer with default DynamoDB checkpointer |
+| [`dynamodb-consumer`](examples/dynamodb-consumer/) | DynamoDB | Basic Kinesis consumer with a DynamoDB checkpointer |
 | [`redis-consumer`](examples/redis-consumer/) | Redis | Basic Kinesis consumer with Redis checkpointer |
 | [`redis-multitenant`](examples/redis-multitenant/) | Redis | Two applications sharing one Redis instance |
 | [`prometheus-metrics`](examples/prometheus-metrics/) | Prometheus | Consumer with external Prometheus registry |
@@ -208,6 +259,24 @@ func (p *myProcessor) ProcessRecords(input *kc.ProcessRecordsInput) error {
 ```
 
 > **Note:** Records before the failed one that were already processed will be retried on the next attempt. Make your processor idempotent (e.g. use conditional writes).
+
+## Migrating to 0.6
+
+0.6 removes dependencies the library pulled into every application (see [#12](https://github.com/ODudek/go-kcl/issues/12)):
+
+| Before | Now |
+|---|---|
+| `wk.NewWorker(f, cfg)` built a Kinesis client and a DynamoDB checkpointer | Set both: `.WithKinesis(kc).WithCheckpointer(cp)`; build clients yourself or with `awsclients` |
+| `chk.NewDynamoCheckpoint(cfg)` in `clientlibrary/checkpoint` | `dynamochk.NewDynamoCheckpoint(cfg).WithDynamoDB(client)` in `clientlibrary/checkpoint/dynamodb` |
+| `zap.NewZapLoggerWithConfig`, `logger.Configuration` | Configure zap yourself and wrap it with `zap.NewZapLogger`, or use `logger.NewSlogLogger` |
+| `logger.NewLogrusLogger`, `logger.NewLogrusLoggerWithConfig`, `logger/zerolog` | Removed: use zap or slog, or implement `logger.Logger` for your logger |
+| `logger.GetDefaultLogger()` was logrus | It is `log/slog` (`slog.Default()`) |
+
+The AWS SDK is raised from 1.25 to 1.47. Since DynamoDB client 1.36, when the credentials carry an account ID (SSO,
+assumed roles, web identity, `AWS_ACCOUNT_ID`) and no `DynamoDBEndpoint` is set, requests go to the account-based
+endpoint `https://<account-id>.ddb.<region>.amazonaws.com` instead of `dynamodb.<region>.amazonaws.com`. If an egress
+proxy or firewall allows only the old host name, allow the new one or set `AWS_ACCOUNT_ID_ENDPOINT_MODE=disabled`
+(or `AccountIDEndpointMode` on your client).
 
 ## Documentation
 
