@@ -69,6 +69,14 @@ type Worker struct {
 
 	shardStatus          map[string]*par.ShardStatus
 	shardStealInProgress bool
+
+	// consumers holds the IDs of the shards a consumer goroutine is reading.
+	// It, not the lease owner in shardStatus, tells which shards this worker
+	// is consuming: the owner is also read back from the checkpointer, which
+	// can still name this worker after a consumer exited and failed to release
+	// its lease.
+	consumersMu sync.Mutex
+	consumers   map[string]bool
 }
 
 // NewWorker constructs a Worker instance for processing Kinesis stream data.
@@ -222,6 +230,7 @@ func (w *Worker) initialize() error {
 	}
 
 	w.shardStatus = make(map[string]*par.ShardStatus)
+	w.consumers = make(map[string]bool)
 
 	stopChan := make(chan struct{})
 	w.stop = &stopChan
@@ -288,13 +297,7 @@ func (w *Worker) eventLoop() {
 
 		for _, shard := range w.acquireLeases() {
 			acquired = true
-			w.waitGroup.Add(1)
-			go func(shard *par.ShardStatus) {
-				defer w.waitGroup.Done()
-				if err := w.newShardConsumer(shard).getRecords(); err != nil {
-					log.Errorf("Error in getRecords: %+v", err)
-				}
-			}(shard)
+			w.startConsumer(shard)
 		}
 
 		if w.kclConfig.EnableLeaseStealing {
@@ -306,6 +309,37 @@ func (w *Worker) eventLoop() {
 	}
 }
 
+// startConsumer reads a just-leased shard in a new goroutine. The shard counts
+// as consumed from now until the consumer has exited and released its lease,
+// so the next eventLoop iteration leases it again if the consumer stopped.
+func (w *Worker) startConsumer(shard *par.ShardStatus) {
+	w.setConsuming(shard.ID, true)
+	w.waitGroup.Add(1)
+	go func() {
+		defer w.waitGroup.Done()
+		defer w.setConsuming(shard.ID, false)
+		if err := w.newShardConsumer(shard).getRecords(); err != nil {
+			w.kclConfig.Logger.Errorf("Error in getRecords: %+v", err)
+		}
+	}()
+}
+
+func (w *Worker) setConsuming(shardID string, consuming bool) {
+	w.consumersMu.Lock()
+	defer w.consumersMu.Unlock()
+	if consuming {
+		w.consumers[shardID] = true
+	} else {
+		delete(w.consumers, shardID)
+	}
+}
+
+func (w *Worker) isConsuming(shardID string) bool {
+	w.consumersMu.Lock()
+	defer w.consumersMu.Unlock()
+	return w.consumers[shardID]
+}
+
 // acquireLeases leases free shards until this worker holds its fair share (see
 // leaseShare) and returns the shards it acquired; the caller starts their
 // consumers. Taking the whole share in one iteration, rather than one shard per
@@ -313,14 +347,18 @@ func (w *Worker) eventLoop() {
 // consumption up. Shards are visited in map order, which Go randomises, so
 // workers that start together spread over the shards instead of racing for the
 // same ones; GetLease is conditional, and rebalance evens out the rest.
+//
+// A shard this worker does not consume is leased even when its owner is this
+// worker: that lease was left behind by a consumer that exited and failed to
+// release it, and GetLease renews it like any lease of this worker's own.
 func (w *Worker) acquireLeases() []*par.ShardStatus {
 	log := w.kclConfig.Logger
 
-	// Refresh the view of every shard this worker does not own first, so the
-	// share counts the workers that hold leases right now.
+	// Refresh the view of every shard this worker does not consume first, so
+	// the share counts the workers that hold leases right now.
 	unreadable := map[string]bool{}
 	for _, shard := range w.shardStatus {
-		if shard.GetLeaseOwner() == w.workerID {
+		if w.isConsuming(shard.ID) {
 			continue
 		}
 		// checkpoint may not exist yet is not an error condition.
@@ -336,8 +374,8 @@ func (w *Worker) acquireLeases() []*par.ShardStatus {
 		if held >= target {
 			break
 		}
-		// already owner of the shard, unreadable, or closed and fully processed
-		if shard.GetLeaseOwner() == w.workerID || unreadable[shard.ID] || shard.GetCheckpoint() == chk.ShardEnd {
+		// already consumed, unreadable, or closed and fully processed
+		if w.isConsuming(shard.ID) || unreadable[shard.ID] || shard.GetCheckpoint() == chk.ShardEnd {
 			continue
 		}
 
@@ -376,11 +414,11 @@ func (w *Worker) acquireLeases() []*par.ShardStatus {
 	return acquired
 }
 
-// leaseShare returns how many open shards this worker holds and how many it
-// should hold: ceil(open shards / active workers), capped at
-// MaxLeasesForWorker. A worker is active while it holds an unexpired lease (an
-// unknown timeout counts as unexpired, which only makes the share smaller);
-// this worker always counts.
+// leaseShare returns how many open shards this worker consumes and how many it
+// should: ceil(open shards / active workers), capped at MaxLeasesForWorker. A
+// worker is active while it holds an unexpired lease (an unknown timeout counts
+// as unexpired, which only makes the share smaller); this worker always counts.
+// A lease of this worker's own on a shard it does not consume counts as free.
 func (w *Worker) leaseShare() (held, target int) {
 	now := time.Now()
 	workers := map[string]bool{w.workerID: true}
@@ -391,8 +429,10 @@ func (w *Worker) leaseShare() (held, target int) {
 		}
 		open++
 		switch owner := shard.GetLeaseOwner(); {
-		case owner == w.workerID:
+		case w.isConsuming(shard.ID):
 			held++
+		case owner == w.workerID:
+			// left behind by a failed release; acquireLeases leases it again
 		case owner != "":
 			if timeout := shard.GetLeaseTimeout(); timeout.IsZero() || timeout.After(now) {
 				workers[owner] = true

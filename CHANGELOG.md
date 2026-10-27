@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A worker no longer stops consuming a shard for good after a short outage of the checkpoint store ([#11](https://github.com/ODudek/go-kcl/issues/11)). When a shard consumer exited and `RemoveLeaseOwner` failed, the store kept this worker as the lease owner; the next `FetchCheckpoint` or Redis lease sync copied that owner back into memory, and the worker skipped the shard as its own although no consumer read it, until a restart. The worker now tracks the shards its consumers read and leases every other shard again, including one whose stale lease names this worker. Redis `FetchCheckpoint` and `syncLeases` no longer make this worker an owner in memory; only `GetLease` does.
+- A failed lease renewal no longer stops the shard consumer while the lease is still held: transient errors (e.g. a Redis timeout) are retried every `LeaseRefreshWaitTime` until the lease would expire before the next attempt. A lease taken or claimed by another worker still stops the consumer at once. Before, one timeout released the lease and the shard was read again from its last checkpoint.
+- A failed `RemoveLeaseOwner` is logged at warn level instead of debug, unless another worker holds the lease by then.
+
 ## [0.5.0] - 2026-10-13
 
 ### Fixed

@@ -282,8 +282,11 @@ func TestListActiveWorkers(t *testing.T) {
 		chk.SequenceNumberKey: "seq-200",
 	}
 
+	// worker-1 is this worker: its lease is in memory because GetLease put it there.
+	ownShard := newShard("shard-001")
+	ownShard.SetLeaseOwner("worker-1")
 	shardStatus := map[string]*par.ShardStatus{
-		"shard-001": newShard("shard-001"),
+		"shard-001": ownShard,
 		"shard-002": newShard("shard-002"),
 	}
 
@@ -611,5 +614,65 @@ func TestSyncLeases_KeepsOwnLease(t *testing.T) {
 	shard.SetLeaseOwner("worker-1") // newTestConfig's worker ID
 
 	require.NoError(t, cp.syncLeases(map[string]*par.ShardStatus{"shard-001": shard}))
+	assert.Equal(t, "worker-1", shard.GetLeaseOwner())
+}
+
+// A lease this worker failed to release stays in Redis with this worker as the
+// owner. A sync must not copy it back after the shard consumer exited: the
+// worker would then skip the shard as its own while nothing reads it (#11).
+func TestSyncLeases_DoesNotRestoreOwnReleasedLease(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+	cp.lastLeaseSync = time.Time{}
+
+	mock.sets[cp.registryKey()] = map[string]bool{"shard-001": true, "shard-002": true}
+	mock.data[cp.shardKey("shard-001")] = map[string]string{
+		chk.LeaseOwnerKey:     "worker-1", // newTestConfig's worker ID
+		chk.SequenceNumberKey: "seq-100",
+	}
+	mock.data[cp.shardKey("shard-002")] = map[string]string{
+		chk.LeaseOwnerKey:     "worker-1",
+		chk.SequenceNumberKey: "seq-200",
+	}
+
+	released := newShard("shard-001") // releaseLease cleared the owner
+	stale := newShard("shard-002")
+	stale.SetLeaseOwner("worker-gone")
+
+	require.NoError(t, cp.syncLeases(map[string]*par.ShardStatus{"shard-001": released, "shard-002": stale}))
+	assert.Equal(t, "", released.GetLeaseOwner())
+	assert.Equal(t, "", stale.GetLeaseOwner())
+	assert.Equal(t, "seq-100", released.GetCheckpoint())
+}
+
+func TestFetchCheckpoint_DoesNotRestoreOwnReleasedLease(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+
+	mock.data[cp.shardKey("shard-001")] = map[string]string{
+		chk.LeaseOwnerKey:     "worker-1",
+		chk.SequenceNumberKey: "seq-100",
+	}
+
+	shard := newShard("shard-001")
+	require.NoError(t, cp.FetchCheckpoint(shard))
+	assert.Equal(t, "", shard.GetLeaseOwner())
+	assert.Equal(t, "seq-100", shard.GetCheckpoint())
+}
+
+// The shard consumer fetches the checkpoint of the shard it has just leased;
+// its own lease stays in memory.
+func TestFetchCheckpoint_KeepsOwnLease(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+
+	mock.data[cp.shardKey("shard-001")] = map[string]string{
+		chk.LeaseOwnerKey:     "worker-1",
+		chk.SequenceNumberKey: "seq-100",
+	}
+
+	shard := newShard("shard-001")
+	shard.SetLeaseOwner("worker-1")
+	require.NoError(t, cp.FetchCheckpoint(shard))
 	assert.Equal(t, "worker-1", shard.GetLeaseOwner())
 }

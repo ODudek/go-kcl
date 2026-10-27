@@ -82,8 +82,41 @@ func TestAcquireLeases_OwnLeasesCountTowardsTheShare(t *testing.T) {
 	w, _ := newAcquireWorker(nil, []string{"s1", "s2", "s3", "s4"},
 		map[string]string{"s1": "worker-1", "s2": "worker-2"}, false)
 	w.shardStatus["s1"].SetLeaseOwner("worker-1")
+	w.consumers = map[string]bool{"s1": true}
 
-	assert.Len(t, w.acquireLeases(), 1, "share 2, already holding 1")
+	got := w.acquireLeases()
+
+	require.Len(t, got, 1, "share 2, already consuming 1")
+	assert.NotEqual(t, "s1", got[0].ID)
+}
+
+// Issue #11: a shard consumer exited and failed to release its lease, so the
+// store still names this worker as the owner, and reading it back puts this
+// worker in memory as the owner again. No consumer reads those shards; they
+// must be leased again instead of being skipped as already owned.
+func TestAcquireLeases_RetakesOwnLeasesWithoutAConsumer(t *testing.T) {
+	w, cp := newAcquireWorker(nil, []string{"s1", "s2", "s3"},
+		map[string]string{"s1": "worker-1", "s2": "worker-1", "s3": "worker-1"}, false)
+	w.shardStatus["s1"].SetLeaseOwner("worker-1")
+	w.consumers = map[string]bool{"s3": true}
+
+	got := w.acquireLeases()
+
+	assert.Len(t, got, 2)
+	assert.ElementsMatch(t, []string{"s1", "s2"}, cp.leased)
+}
+
+// A shard is leased again only once its consumer has exited, whatever its
+// owner in memory says.
+func TestAcquireLeases_SkipsShardsBeingConsumed(t *testing.T) {
+	w, _ := newAcquireWorker(nil, []string{"s1"}, nil, false)
+	w.consumers = map[string]bool{}
+
+	w.setConsuming("s1", true)
+	assert.Empty(t, w.acquireLeases())
+
+	w.setConsuming("s1", false)
+	assert.Len(t, w.acquireLeases(), 1)
 }
 
 func TestAcquireLeases_SkipsClosedShards(t *testing.T) {

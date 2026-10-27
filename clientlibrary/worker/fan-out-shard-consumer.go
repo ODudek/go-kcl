@@ -99,6 +99,11 @@ func (sc *FanOutShardConsumer) getRecords() error {
 					log.Warnf("Failed in acquiring lease on shard: %s for worker: %s", sc.shard.ID, sc.consumerID)
 					return nil
 				}
+				if retryAt := time.Now().Add(time.Duration(sc.kclConfig.LeaseRefreshWaitTime) * time.Millisecond); sc.canRetryLeaseRenewal(err, retryAt) {
+					log.Warnf("Error in refreshing lease on shard: %s for worker: %s, retrying while the lease is held. Error: %+v", sc.shard.ID, sc.consumerID, err)
+					refreshLeaseTimer = time.After(time.Until(retryAt))
+					continue
+				}
 				log.Errorf("Error in refreshing lease on shard: %s for worker: %s. Error: %+v", sc.shard.ID, sc.consumerID, err)
 				return err
 			}

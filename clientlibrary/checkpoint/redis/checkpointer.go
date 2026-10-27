@@ -249,9 +249,7 @@ func (c *RedisCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
 
 	// The lease is read before the checkpoint: a shard another worker has just
 	// leased has an owner but no checkpoint yet, and must not look free here.
-	if assignedTo, ok := data[chk.LeaseOwnerKey]; ok && assignedTo != "" {
-		shard.SetLeaseOwner(assignedTo)
-	}
+	c.syncLeaseOwner(shard, data[chk.LeaseOwnerKey])
 
 	if leaseTimeout, ok := data[chk.LeaseTimeoutKey]; ok && leaseTimeout != "" {
 		t, err := time.Parse(time.RFC3339Nano, leaseTimeout)
@@ -419,13 +417,7 @@ func (c *RedisCheckpoint) syncLeases(shardStatus map[string]*par.ShardStatus) er
 			continue
 		}
 
-		// An owner missing in Redis is a released lease (RemoveLeaseOwner on
-		// shutdown): clear it, or the gone worker keeps counting as active. This
-		// worker's own leases are left alone — their shard consumer renews them,
-		// and a cleared owner would make eventLoop lease the shard a second time.
-		if owner := data[chk.LeaseOwnerKey]; owner != "" || shard.GetLeaseOwner() != c.kclConfig.WorkerID {
-			shard.SetLeaseOwner(owner)
-		}
+		c.syncLeaseOwner(shard, data[chk.LeaseOwnerKey])
 		if checkpoint, found := data[chk.SequenceNumberKey]; found && checkpoint != "" {
 			shard.SetCheckpoint(checkpoint)
 		}
@@ -433,4 +425,24 @@ func (c *RedisCheckpoint) syncLeases(shardStatus map[string]*par.ShardStatus) er
 
 	c.log.Debugf("Lease sync completed. Next lease sync will occur in %s", syncInterval)
 	return nil
+}
+
+// syncLeaseOwner copies the lease owner stored in Redis into the in-memory
+// shard, except for this worker's own leases, which only GetLease changes:
+//   - An owner missing in Redis is a released lease (RemoveLeaseOwner on
+//     shutdown): it is cleared, or the gone worker keeps counting as active.
+//     A lease this worker holds in memory is left alone — its shard consumer
+//     renews it.
+//   - This worker as the owner in Redis is not copied: if this worker does not
+//     hold that lease in memory, it was left behind by a shard consumer that
+//     exited and failed to release it. No consumer reads the shard, so it
+//     counts as free and the worker leases it again (issue #11).
+func (c *RedisCheckpoint) syncLeaseOwner(shard *par.ShardStatus, owner string) {
+	self := c.kclConfig.WorkerID
+	if owner == self {
+		owner = ""
+	}
+	if owner != "" || shard.GetLeaseOwner() != self {
+		shard.SetLeaseOwner(owner)
+	}
 }

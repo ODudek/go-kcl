@@ -21,6 +21,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -64,15 +65,33 @@ func (sc *commonShardConsumer) releaseLease(shard string) {
 	log.Infof("Release lease for shard %s", sc.shard.ID)
 	sc.shard.SetLeaseOwner("")
 
-	// Release the lease by wiping out the lease owner for the shard
-	// Note: we don't need to do anything in case of error here and shard lease will eventually be expired.
+	// Release the lease by wiping out the lease owner for the shard. A lease
+	// another worker holds by now is not ours to release; any other failure
+	// leaves the shard leased to this worker until the lease expires or the
+	// worker leases it again.
 	if err := sc.checkpointer.RemoveLeaseOwner(sc.shard.ID); err != nil {
-		log.Debugf("Failed to release shard lease or shard: %s Error: %+v", sc.shard.ID, err)
+		if errors.As(err, &chk.ErrLeaseNotAcquired{}) {
+			log.Debugf("Failed to release shard lease or shard: %s Error: %+v", sc.shard.ID, err)
+		} else {
+			log.Warnf("Failed to release lease on shard: %s, it stays leased to this worker until it expires. Error: %+v", sc.shard.ID, err)
+		}
 	}
 
 	// reporting lease lose metrics
 	sc.mService.DeleteMetricMillisBehindLatest(shard)
 	sc.mService.LeaseLost(sc.shard.ID)
+}
+
+// canRetryLeaseRenewal reports whether a failed lease renewal can be tried
+// again at retryAt instead of giving the shard up: the lease was not lost to
+// another worker, and is still held at retryAt. A short outage of the
+// checkpoint store then no longer stops the consumer, releases the lease and
+// makes the shard be reprocessed from its last checkpoint.
+func (sc *commonShardConsumer) canRetryLeaseRenewal(err error, retryAt time.Time) bool {
+	if errors.As(err, &chk.ErrLeaseNotAcquired{}) || err.Error() == chk.ErrShardClaimed {
+		return false
+	}
+	return retryAt.Before(sc.shard.GetLeaseTimeout())
 }
 
 // getStartingPosition gets kinesis stating position.
