@@ -25,8 +25,6 @@ import (
 	"math"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis/types"
@@ -159,11 +157,8 @@ func (sc *PollingShardConsumer) getRecords() error {
 			if errors.As(err, &throughputExceededErr) {
 				retriedErrors++
 				if retriedErrors > sc.kclConfig.MaxRetryCount {
-					log.Errorf("message", "Throughput Exceeded Error: "+
-						"reached max retry count getting records from shard",
-						"shardId", sc.shard.ID,
-						"retryCount", retriedErrors,
-						"error", err)
+					log.Errorf("Throughput Exceeded Error: reached max retry count getting records from shard: %s, retryCount: %d, error: %+v",
+						sc.shard.ID, retriedErrors, err)
 					return err
 				}
 				// If there is insufficient provisioned throughput on the stream,
@@ -187,11 +182,8 @@ func (sc *PollingShardConsumer) getRecords() error {
 				retriedErrors++
 				// Greater than MaxRetryCount so we get the last retry
 				if retriedErrors > sc.kclConfig.MaxRetryCount {
-					log.Errorf("message", "KMS Throttling Error: "+
-						"reached max retry count getting records from shard",
-						"shardId", sc.shard.ID,
-						"retryCount", retriedErrors,
-						"error", err)
+					log.Errorf("KMS Throttling Error: reached max retry count getting records from shard: %s, retryCount: %d, error: %+v",
+						sc.shard.ID, retriedErrors, err)
 					return err
 				}
 				// exponential backoff
@@ -318,6 +310,7 @@ func (sc *PollingShardConsumer) callGetRecordsAPI(gri *kinesis.GetRecordsInput) 
 }
 
 func (sc *PollingShardConsumer) renewLease(ctx context.Context) error {
+	log := sc.kclConfig.Logger
 	renewDuration := time.Duration(sc.kclConfig.LeaseRefreshWaitTime) * time.Millisecond
 	for {
 		timer := time.NewTimer(renewDuration)

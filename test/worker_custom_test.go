@@ -20,17 +20,16 @@ package test
 
 import (
 	"context"
-	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
-	"os"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
-	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 
+	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	par "github.com/ODudek/go-kcl/clientlibrary/partition"
 	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
@@ -43,8 +42,7 @@ func TestWorkerInjectCheckpointer(t *testing.T) {
 		WithMaxLeasesForWorker(1).
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000)
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	kclConfig.WithLogger(newTestLogger(slog.LevelDebug))
 
 	assert.Equal(t, regionName, kclConfig.RegionName)
 	assert.Equal(t, streamName, kclConfig.StreamName)
@@ -96,8 +94,7 @@ func TestWorkerInjectKinesis(t *testing.T) {
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000)
 
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	kclConfig.WithLogger(newTestLogger(slog.LevelDebug))
 
 	assert.Equal(t, regionName, kclConfig.RegionName)
 	assert.Equal(t, streamName, kclConfig.StreamName)
@@ -138,8 +135,7 @@ func TestWorkerInjectKinesisAndCheckpointer(t *testing.T) {
 		WithShardSyncIntervalMillis(5000).
 		WithFailoverTimeMillis(300000)
 
-	log.SetOutput(os.Stdout)
-	log.SetLevel(log.DebugLevel)
+	kclConfig.WithLogger(newTestLogger(slog.LevelDebug))
 
 	assert.Equal(t, regionName, kclConfig.RegionName)
 	assert.Equal(t, streamName, kclConfig.StreamName)

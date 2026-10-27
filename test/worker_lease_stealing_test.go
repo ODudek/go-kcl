@@ -1,8 +1,10 @@
 package test
 
 import (
-	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
+	"log/slog"
 	"testing"
+
+	chk "github.com/ODudek/go-kcl/clientlibrary/checkpoint"
 
 	cfg "github.com/ODudek/go-kcl/clientlibrary/config"
 	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
@@ -34,17 +36,7 @@ func newLeaseStealingWorkerFactory(t *testing.T) *leaseStealingWorkerFactory {
 }
 
 func (wf *leaseStealingWorkerFactory) CreateKCLConfig(workerID string, config *TestClusterConfig) *cfg.KinesisClientLibConfiguration {
-	log := logger.NewLogrusLoggerWithConfig(logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Error,
-		ConsoleJSONFormat: false,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	})
-
-	log.WithFields(logger.Fields{"worker": workerID})
+	log := newTestLogger(slog.LevelError).WithFields(logger.Fields{"worker": workerID})
 
 	return cfg.NewKinesisClientLibConfig(config.appName, config.streamName, config.regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).

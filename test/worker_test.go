@@ -19,6 +19,7 @@
 package test
 
 import (
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -35,8 +36,6 @@ import (
 	"github.com/ODudek/go-kcl/clientlibrary/metrics/cloudwatch"
 	"github.com/ODudek/go-kcl/clientlibrary/metrics/prometheus"
 	wk "github.com/ODudek/go-kcl/clientlibrary/worker"
-	"github.com/ODudek/go-kcl/logger"
-	zaplogger "github.com/ODudek/go-kcl/logger/zap"
 )
 
 const (
@@ -54,21 +53,7 @@ const metricsSystem = "cloudwatch"
 var shardID string
 
 func TestWorker(t *testing.T) {
-	// At minimal. use standard logrus logger
-	// log := logger.NewLogrusLogger(logrus.StandardLogger())
-	//
-	// In order to have precise control over logging. Use logger with config
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Error,
-		ConsoleJSONFormat: false,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	}
-	// Use logrus logger
-	log := logger.NewLogrusLoggerWithConfig(config)
+	log := newTestLogger(slog.LevelError)
 
 	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).
@@ -83,14 +68,7 @@ func TestWorker(t *testing.T) {
 }
 
 func TestWorkerWithTimestamp(t *testing.T) {
-	// In order to have precise control over logging. Use logger with config
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Debug,
-		ConsoleJSONFormat: false,
-	}
-	// Use logrus logger
-	log := logger.NewLogrusLoggerWithConfig(config)
+	log := newTestLogger(slog.LevelDebug)
 
 	ts := time.Now().Add(time.Second * 5)
 	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
@@ -106,23 +84,7 @@ func TestWorkerWithTimestamp(t *testing.T) {
 }
 
 func TestWorkerWithSigInt(t *testing.T) {
-	// At miminal. use standard zap logger
-	//zapLogger, err := zap.NewProduction()
-	//assert.Nil(t, err)
-	//log := zaplogger.NewZapLogger(zapLogger.Sugar())
-	//
-	// In order to have precise control over logging. Use logger with config.
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Debug,
-		ConsoleJSONFormat: true,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	}
-	// use zap logger
-	log := zaplogger.NewZapLoggerWithConfig(config)
+	log := newTestLogger(slog.LevelDebug)
 
 	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).
@@ -183,21 +145,7 @@ func TestWorkerAssumeRole(t *testing.T) {
 }
 
 func TestEnhancedFanOutConsumer(t *testing.T) {
-	// At minimal, use standard logrus logger
-	// log := logger.NewLogrusLogger(logrus.StandardLogger())
-	//
-	// In order to have precise control over logging. Use logger with config
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Debug,
-		ConsoleJSONFormat: false,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	}
-	// Use logrus logger
-	log := logger.NewLogrusLoggerWithConfig(config)
+	log := newTestLogger(slog.LevelDebug)
 
 	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).
@@ -212,21 +160,7 @@ func TestEnhancedFanOutConsumer(t *testing.T) {
 }
 
 func TestEnhancedFanOutConsumerDefaultConsumerName(t *testing.T) {
-	// At minimal, use standard logrus logger
-	// log := logger.NewLogrusLogger(logrus.StandardLogger())
-	//
-	// In order to have precise control over logging. Use logger with config
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Debug,
-		ConsoleJSONFormat: false,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	}
-	// Use logrus logger
-	log := logger.NewLogrusLoggerWithConfig(config)
+	log := newTestLogger(slog.LevelDebug)
 
 	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).
@@ -244,21 +178,7 @@ func TestEnhancedFanOutConsumerARN(t *testing.T) {
 	t.Skip("Need to provide actual consumerARN")
 
 	consumerARN := "arn:aws:kinesis:*:stream/kcl-test/consumer/fanout-poc-consumer-test:*"
-	// At minimal, use standard logrus logger
-	// log := logger.NewLogrusLogger(logrus.StandardLogger())
-	//
-	// In order to have precise control over logging. Use logger with config
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Debug,
-		ConsoleJSONFormat: false,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    true,
-		Filename:          "log.log",
-	}
-	// Use logrus logger
-	log := logger.NewLogrusLoggerWithConfig(config)
+	log := newTestLogger(slog.LevelDebug)
 
 	kclConfig := cfg.NewKinesisClientLibConfig(appName, streamName, regionName, workerID).
 		WithInitialPositionInStream(cfg.LATEST).

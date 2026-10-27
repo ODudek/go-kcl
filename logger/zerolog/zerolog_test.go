@@ -1,32 +1,32 @@
 package zerolog
 
 import (
-	"github.com/ODudek/go-kcl/logger"
+	"bytes"
 	"testing"
+
+	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/ODudek/go-kcl/logger"
 )
 
-func TestZeroLogLoggerWithConfig(t *testing.T) {
-	config := logger.Configuration{
-		EnableConsole:     true,
-		ConsoleLevel:      logger.Debug,
-		ConsoleJSONFormat: true,
-		EnableFile:        true,
-		FileLevel:         logger.Info,
-		FileJSONFormat:    false,
-		Filename:          "/tmp/kcl-zerolog-log.log",
-	}
+func TestZerologLogger_WritesThroughTheGivenLogger(t *testing.T) {
+	var buf bytes.Buffer
+	log := NewZerologLogger(zerolog.New(&buf).Level(zerolog.InfoLevel)).
+		WithFields(logger.Fields{"shard": "s1", "worker": "w1"})
 
-	log := NewZerologLoggerWithConfig(config)
+	log.Debugf("hidden %d", 1)
+	log.Infof("lease %s", "renewed")
 
-	contextLogger := log.WithFields(logger.Fields{"key1": "value1"})
-	contextLogger.Debugf("Starting with rs zerolog")
-	contextLogger.Infof("Rs zerolog is awesome")
+	assert.NotContains(t, buf.String(), "hidden")
+	assert.Contains(t, buf.String(), `"message":"lease renewed"`)
+	assert.Contains(t, buf.String(), `"shard":"s1"`)
+	assert.Contains(t, buf.String(), `"worker":"w1"`)
 }
 
-func TestZeroLogLogger(t *testing.T) {
-	log := NewZerologLogger()
+func TestZerologLogger_PanicfPanics(t *testing.T) {
+	var buf bytes.Buffer
+	log := NewZerologLogger(zerolog.New(&buf))
 
-	contextLogger := log.WithFields(logger.Fields{"key1": "value1"})
-	contextLogger.Debugf("Starting with zerolog")
-	contextLogger.Infof("Zerolog is awesome")
+	assert.Panics(t, func() { log.Panicf("boom") })
 }

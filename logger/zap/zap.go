@@ -19,15 +19,12 @@
 // Note: The implementation comes from https://www.mountedthoughts.com/golang-logger-interface/
 // https://github.com/amitrai48/logger
 
+// Package zap implements the KCL logger using Uber's zap.
 package zap
 
 import (
-	"os"
-
 	"github.com/ODudek/go-kcl/logger"
 	uzap "go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	lumberjack "gopkg.in/natefinch/lumberjack.v2"
 )
 
 type ZapLogger struct {
@@ -45,46 +42,6 @@ type ZapLogger struct {
 // Base zap logger can be convert to SugaredLogger by calling to add a wrapper:
 // sugaredLogger := log.Sugar()
 func NewZapLogger(logger *uzap.SugaredLogger) logger.Logger {
-	return &ZapLogger{
-		sugaredLogger: logger,
-	}
-}
-
-// NewZapLoggerWithConfig creates and configs Logger instance backed by
-// zap Sugared logger.
-func NewZapLoggerWithConfig(config logger.Configuration) logger.Logger {
-	cores := []zapcore.Core{}
-
-	if config.EnableConsole {
-		level := getZapLevel(config.ConsoleLevel)
-		writer := zapcore.Lock(os.Stdout)
-		core := zapcore.NewCore(getEncoder(config.ConsoleJSONFormat), writer, level)
-		cores = append(cores, core)
-	}
-
-	if config.EnableFile {
-		level := getZapLevel(config.FileLevel)
-		writer := zapcore.AddSync(&lumberjack.Logger{
-			Filename:   config.Filename,
-			MaxSize:    config.MaxSizeMB,
-			Compress:   true,
-			MaxAge:     config.MaxAgeDays,
-			MaxBackups: config.MaxBackups,
-			LocalTime:  config.LocalTime,
-		})
-		core := zapcore.NewCore(getEncoder(config.FileJSONFormat), writer, level)
-		cores = append(cores, core)
-	}
-
-	combinedCore := zapcore.NewTee(cores...)
-
-	// AddCallerSkip skips 2 number of callers, this is important else the file that gets
-	// logged will always be the wrapped file. In our case zap.go
-	logger := uzap.New(combinedCore,
-		uzap.AddCallerSkip(2),
-		uzap.AddCaller(),
-	).Sugar()
-
 	return &ZapLogger{
 		sugaredLogger: logger,
 	}
@@ -111,7 +68,7 @@ func (l *ZapLogger) Fatalf(format string, args ...interface{}) {
 }
 
 func (l *ZapLogger) Panicf(format string, args ...interface{}) {
-	l.sugaredLogger.Fatalf(format, args...)
+	l.sugaredLogger.Panicf(format, args...)
 }
 
 func (l *ZapLogger) WithFields(fields logger.Fields) logger.Logger {
@@ -122,30 +79,4 @@ func (l *ZapLogger) WithFields(fields logger.Fields) logger.Logger {
 	}
 	newLogger := l.sugaredLogger.With(f...)
 	return &ZapLogger{newLogger}
-}
-
-func getEncoder(isJSON bool) zapcore.Encoder {
-	encoderConfig := uzap.NewProductionEncoderConfig()
-	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	if isJSON {
-		return zapcore.NewJSONEncoder(encoderConfig)
-	}
-	return zapcore.NewConsoleEncoder(encoderConfig)
-}
-
-func getZapLevel(level string) zapcore.Level {
-	switch level {
-	case logger.Info:
-		return zapcore.InfoLevel
-	case logger.Warn:
-		return zapcore.WarnLevel
-	case logger.Debug:
-		return zapcore.DebugLevel
-	case logger.Error:
-		return zapcore.ErrorLevel
-	case logger.Fatal:
-		return zapcore.FatalLevel
-	default:
-		return zapcore.InfoLevel
-	}
 }
