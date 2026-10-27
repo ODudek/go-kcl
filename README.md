@@ -154,17 +154,15 @@ kcl:events:shard:shardId-000000000001
 
 The KCL logs through the `logger.Logger` interface, set with `kclConfig.WithLogger()`. The default writes to
 `slog.Default()` (looked up at each call, so `slog.SetDefault` takes effect even after the config was created).
-Adapters wrap a logger you have already configured; each lives in its own package, so only the one you import is
-linked:
+Adapters wrap a logger you have already configured:
 
 | Logger | Constructor |
 |---|---|
 | `log/slog` | `logger.NewSlogLogger(*slog.Logger)` |
-| [logrus](https://github.com/sirupsen/logrus) | `logrus.NewLogrusLogger(logrus.FieldLogger)` from `logger/logrus` |
-| [zap](https://github.com/uber-go/zap) | `zap.NewZapLogger(*zap.SugaredLogger)` from `logger/zap` |
-| [zerolog](https://github.com/rs/zerolog) | `zerolog.NewZerologLogger(zerolog.Logger)` from `logger/zerolog` |
+| [zap](https://github.com/uber-go/zap) | `zap.NewZapLogger(*zap.SugaredLogger)` from `logger/zap` (only applications importing it link zap) |
 
-Log files and their rotation are left to the application's logger.
+For any other logger, implement the `logger.Logger` interface. Log files and their rotation are left to the
+application's logger.
 
 ## KPL Aggregation
 
@@ -270,8 +268,8 @@ func (p *myProcessor) ProcessRecords(input *kc.ProcessRecordsInput) error {
 |---|---|
 | `wk.NewWorker(f, cfg)` built a Kinesis client and a DynamoDB checkpointer | Set both: `.WithKinesis(kc).WithCheckpointer(cp)`; build clients yourself or with `awsclients` |
 | `chk.NewDynamoCheckpoint(cfg)` in `clientlibrary/checkpoint` | `dynamochk.NewDynamoCheckpoint(cfg).WithDynamoDB(client)` in `clientlibrary/checkpoint/dynamodb` |
-| `logger.NewLogrusLogger(l)` | `logrus.NewLogrusLogger(l)` in `logger/logrus` |
-| `logger.NewLogrusLoggerWithConfig`, `zap.NewZapLoggerWithConfig`, `zerolog.NewZerologLoggerWithConfig`, `logger.Configuration` | Configure the logger yourself and wrap it: `NewLogrusLogger`, `NewZapLogger`, `NewZerologLogger(zerolog.Logger)`, `logger.NewSlogLogger` |
+| `zap.NewZapLoggerWithConfig`, `logger.Configuration` | Configure zap yourself and wrap it with `zap.NewZapLogger`, or use `logger.NewSlogLogger` |
+| `logger.NewLogrusLogger`, `logger.NewLogrusLoggerWithConfig`, `logger/zerolog` | Removed: use zap or slog, or implement `logger.Logger` for your logger |
 | `logger.GetDefaultLogger()` was logrus | It is `log/slog` (`slog.Default()`) |
 
 The AWS SDK is raised from 1.25 to 1.47. Since DynamoDB client 1.36, when the credentials carry an account ID (SSO,

@@ -22,10 +22,10 @@
 // Package logger defines the Logger interface the KCL logs through, and a
 // default implementation on the standard library's log/slog.
 //
-// Adapters for third-party loggers live in their own packages (logger/logrus,
-// logger/zap, logger/zerolog), so an application links only the logger it
-// uses. They wrap a logger the application has already configured; writing
-// to and rotating log files is left to the application.
+// The zap adapter lives in its own package, logger/zap, so only applications
+// that import it link zap. It wraps a logger the application has already
+// configured; writing to and rotating log files is left to the application.
+// Any other logger can be used by implementing Logger.
 package logger
 
 // Fields Type to pass when we want to call WithFields for structured logging
