@@ -520,3 +520,76 @@ func TestClaimShard(t *testing.T) {
 	assert.Equal(t, shard.Checkpoint, status.Checkpoint)
 	assert.Equal(t, shard.ParentShardId, status.ParentShardId)
 }
+
+// The other workers count a worker as active while it holds a lease whose
+// timeout is in the future (Worker.leaseShare), so a released shard has to
+// carry an expired timeout, not only lose its owner: otherwise the worker that
+// shut down keeps counting as active until the old timeout passes, and the
+// shards it released stay unread for that long.
+func TestRemoveLeaseOwnerExpiresTheLeaseTimeout(t *testing.T) {
+	inAMinute := time.Now().UTC().Add(time.Minute)
+	svc := &mockDynamoDB{tableExist: true, item: map[string]types.AttributeValue{
+		chk.LeaseKeyKey:       &types.AttributeValueMemberS{Value: "0001"},
+		chk.LeaseOwnerKey:     &types.AttributeValueMemberS{Value: "abc"},
+		chk.LeaseTimeoutKey:   &types.AttributeValueMemberS{Value: inAMinute.Format(time.RFC3339Nano)},
+		chk.SequenceNumberKey: &types.AttributeValueMemberS{Value: "deadbeef"},
+	}}
+	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
+	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(svc)
+
+	// Another worker's view of the shard while "abc" still holds it.
+	other := &par.ShardStatus{ID: "0001", Mux: &sync.RWMutex{}}
+	assert.NoError(t, checkpoint.FetchCheckpoint(other))
+	assert.True(t, other.GetLeaseTimeout().After(time.Now()), "the lease is held")
+
+	before := time.Now().UTC()
+	assert.NoError(t, checkpoint.RemoveLeaseOwner("0001"))
+
+	// Only this worker's own lease is released.
+	assert.Equal(t, "AssignedTo = :assigned_to", aws.ToString(svc.updateInput.ConditionExpression))
+	assert.Equal(t, &types.AttributeValueMemberS{Value: "abc"}, svc.updateInput.ExpressionAttributeValues[":assigned_to"])
+
+	// The owner is gone, and the checkpoint is untouched.
+	_, hasOwner := svc.item[chk.LeaseOwnerKey]
+	assert.False(t, hasOwner)
+	assert.Equal(t, "deadbeef", svc.item[chk.SequenceNumberKey].(*types.AttributeValueMemberS).Value)
+
+	// The timeout is now, in the format FetchCheckpoint parses.
+	assert.NoError(t, checkpoint.FetchCheckpoint(other))
+	assert.False(t, other.GetLeaseTimeout().After(time.Now()), "the released lease must not count as held")
+	assert.False(t, other.GetLeaseTimeout().Before(before), "the timeout is set at release time")
+}
+
+// ownerCheckingDynamoDB makes UpdateItem enforce the owner condition of
+// RemoveLeaseOwner, as DynamoDB does.
+type ownerCheckingDynamoDB struct{ *mockDynamoDB }
+
+func (o ownerCheckingDynamoDB) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
+	owner, ok := o.item[chk.LeaseOwnerKey]
+	want := params.ExpressionAttributeValues[":assigned_to"]
+	if !ok || owner.(*types.AttributeValueMemberS).Value != want.(*types.AttributeValueMemberS).Value {
+		return nil, &types.ConditionalCheckFailedException{Message: aws.String("The conditional request failed")}
+	}
+	return o.mockDynamoDB.UpdateItem(ctx, params, optFns...)
+}
+
+// A lease another worker holds by now is not ours to release: neither its
+// owner nor its timeout may change.
+func TestRemoveLeaseOwnerLeavesAnotherWorkersLeaseAlone(t *testing.T) {
+	timeout := time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
+	svc := &mockDynamoDB{tableExist: true, item: map[string]types.AttributeValue{
+		chk.LeaseKeyKey:       &types.AttributeValueMemberS{Value: "0001"},
+		chk.LeaseOwnerKey:     &types.AttributeValueMemberS{Value: "other-worker"},
+		chk.LeaseTimeoutKey:   &types.AttributeValueMemberS{Value: timeout},
+		chk.SequenceNumberKey: &types.AttributeValueMemberS{Value: "deadbeef"},
+	}}
+	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
+	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(ownerCheckingDynamoDB{svc})
+
+	err := checkpoint.RemoveLeaseOwner("0001")
+
+	var conditionFailed *types.ConditionalCheckFailedException
+	assert.ErrorAs(t, err, &conditionFailed)
+	assert.Equal(t, "other-worker", svc.item[chk.LeaseOwnerKey].(*types.AttributeValueMemberS).Value)
+	assert.Equal(t, timeout, svc.item[chk.LeaseTimeoutKey].(*types.AttributeValueMemberS).Value)
+}

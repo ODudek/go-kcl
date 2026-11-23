@@ -288,7 +288,17 @@ func (checkpointer *DynamoCheckpoint) RemoveLeaseInfo(shardID string) error {
 	return err
 }
 
-// RemoveLeaseOwner to remove lease owner for the shard entry
+// RemoveLeaseOwner releases this worker's lease on the shard: it removes the
+// lease owner and expires the lease timeout in the same update. The condition
+// keeps it to this worker's own lease, so a lease another worker holds by now
+// is never touched.
+//
+// The timeout is set to now rather than left alone because the other workers
+// count a worker as active while it holds a lease whose timeout is still in the
+// future (see Worker.leaseShare). With the old timeout left in place, a worker
+// that released its shards on shutdown kept counting as active until the
+// timeout passed (up to FailoverTimeMillis), and the remaining workers left the
+// released shards unread for that long.
 func (checkpointer *DynamoCheckpoint) RemoveLeaseOwner(shardID string) error {
 	input := &dynamodb.UpdateItemInput{
 		TableName: aws.String(checkpointer.TableName),
@@ -297,10 +307,14 @@ func (checkpointer *DynamoCheckpoint) RemoveLeaseOwner(shardID string) error {
 				Value: shardID,
 			},
 		},
-		UpdateExpression: aws.String("remove " + chk.LeaseOwnerKey),
+		UpdateExpression: aws.String("REMOVE " + chk.LeaseOwnerKey + " SET " + chk.LeaseTimeoutKey + " = :now"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":assigned_to": &types.AttributeValueMemberS{
 				Value: checkpointer.kclConfig.WorkerID,
+			},
+			// The format FetchCheckpoint and GetLease use for the lease timeout.
+			":now": &types.AttributeValueMemberS{
+				Value: time.Now().UTC().Format(time.RFC3339Nano),
 			},
 		},
 		ConditionExpression: aws.String("AssignedTo = :assigned_to"),

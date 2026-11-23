@@ -30,6 +30,8 @@ package dynamodb
 
 import (
 	"context"
+	"strings"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -43,6 +45,7 @@ type mockDynamoDB struct {
 	item                      map[string]types.AttributeValue
 	conditionalExpression     string
 	expressionAttributeValues map[string]types.AttributeValue
+	updateInput               *dynamodb.UpdateItemInput
 }
 
 func (m *mockDynamoDB) Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
@@ -104,10 +107,15 @@ func (m *mockDynamoDB) GetItem(ctx context.Context, params *dynamodb.GetItemInpu
 }
 
 func (m *mockDynamoDB) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
-	exp := params.UpdateExpression
+	m.updateInput = params
+	exp := strings.ToLower(aws.ToString(params.UpdateExpression))
 
-	if aws.ToString(exp) == "remove "+chk.LeaseOwnerKey {
+	if strings.Contains(exp, "remove "+strings.ToLower(chk.LeaseOwnerKey)) {
 		delete(m.item, chk.LeaseOwnerKey)
+	}
+
+	if now, ok := params.ExpressionAttributeValues[":now"]; ok && strings.Contains(exp, "set "+strings.ToLower(chk.LeaseTimeoutKey)+" = :now") {
+		m.item[chk.LeaseTimeoutKey] = now
 	}
 
 	return nil, nil
