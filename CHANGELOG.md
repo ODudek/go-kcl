@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-11-23
+
+### Fixed
+
+- `DynamoCheckpoint.Init` no longer fails a worker that starts together with others on a new lease table ([#20](https://github.com/ODudek/go-kcl/issues/20)). All of them saw the table missing and called `CreateTable`; the ones that lost got `ResourceInUseException`, and `Worker.Start` returned it. That error now means another worker created the table, and `Init` carries on.
+- `Init` no longer takes every `DescribeTable` error for a missing table. Only `ResourceNotFoundException` means missing; any other error (a timeout, throttling, a missing permission) is returned, wrapped with the table name. Before, it was dropped and the worker called `CreateTable`, which failed with a misleading `ResourceInUseException: Table already exists`.
+
+### Changed
+
+- `Init` waits until the lease table is `ACTIVE` (at most 2 minutes) after creating it, or when it finds it `CREATING`, so the first lease reads and writes do not race the table's creation. An existing table in any other state, such as `ACTIVE` or `UPDATING`, is used as before, with one `DescribeTable` call.
+
 ## [0.6.1] - 2026-10-27
 
 ### Changed
