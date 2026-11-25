@@ -57,10 +57,11 @@ func (m *mockDynamoDB) DescribeTable(ctx context.Context, params *dynamodb.Descr
 		return &dynamodb.DescribeTableOutput{}, &types.ResourceNotFoundException{Message: aws.String("doesNotExist")}
 	}
 
-	return &dynamodb.DescribeTableOutput{}, nil
+	return &dynamodb.DescribeTableOutput{Table: &types.TableDescription{TableStatus: types.TableStatusActive}}, nil
 }
 
 func (m *mockDynamoDB) CreateTable(ctx context.Context, params *dynamodb.CreateTableInput, optFns ...func(*dynamodb.Options)) (*dynamodb.CreateTableOutput, error) {
+	m.tableExist = true
 	return &dynamodb.CreateTableOutput{}, nil
 }
 
