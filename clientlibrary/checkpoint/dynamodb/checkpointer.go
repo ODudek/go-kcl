@@ -85,18 +85,42 @@ func (checkpointer *DynamoCheckpoint) WithDynamoDB(svc DynamoDBAPI) *DynamoCheck
 // WithDynamoDB.
 var ErrNoDynamoDBClient = errors.New("no DynamoDB client: set one with WithDynamoDB (awsclients.NewDynamoDBClient builds one from the KCL configuration)")
 
-// Init ensures the lease table exists, through the DynamoDB client set with
-// WithDynamoDB.
+// Init ensures the lease table exists and can be used, through the DynamoDB
+// client set with WithDynamoDB:
+//   - Only ResourceNotFoundException from DescribeTable means the table is
+//     missing; any other DescribeTable error is returned, instead of being
+//     taken for a missing table and turned into a misleading CreateTable error.
+//   - A missing table is created. ResourceInUseException from CreateTable means
+//     another worker created it first, which is not an error: workers that
+//     start together on a new table all get past Init.
+//   - A table that was just created, or is still CREATING, is waited for until
+//     it is ACTIVE (at most tableActiveTimeout), so the first lease reads and
+//     writes do not race its creation. A table in any other state (ACTIVE, or
+//     UPDATING, which still serves reads and writes) is used as is.
 func (checkpointer *DynamoCheckpoint) Init() error {
 	if checkpointer.svc == nil {
 		return ErrNoDynamoDBClient
 	}
 
-	if !checkpointer.doesTableExist() {
-		return checkpointer.createTable()
+	exists, usable, err := checkpointer.describeTable()
+	if err != nil {
+		return fmt.Errorf("describe lease table %s: %w", checkpointer.TableName, err)
+	}
+	if usable {
+		return nil
 	}
 
-	return nil
+	if !exists {
+		if err := checkpointer.createTable(); err != nil {
+			var inUse *types.ResourceInUseException
+			if !errors.As(err, &inUse) {
+				return fmt.Errorf("create lease table %s: %w", checkpointer.TableName, err)
+			}
+			checkpointer.log.Infof("Lease table %s is being created by another worker", checkpointer.TableName)
+		}
+	}
+
+	return checkpointer.waitUntilTableActive()
 }
 
 // GetLease attempts to gain a lock on the given shard
@@ -484,13 +508,55 @@ func (checkpointer *DynamoCheckpoint) createTable() error {
 	return err
 }
 
-func (checkpointer *DynamoCheckpoint) doesTableExist() bool {
+// describeTable reports whether the lease table exists and whether it can be
+// used now. Only ResourceNotFoundException means it does not exist; any other
+// error is returned. Only a CREATING table is not usable yet: an UPDATING table
+// still serves reads and writes, and other states are left to the calls that
+// follow, as before. A response without a table description is taken as an
+// existing, usable table, since there is no status to wait for.
+func (checkpointer *DynamoCheckpoint) describeTable() (exists, usable bool, err error) {
 	input := &dynamodb.DescribeTableInput{
 		TableName: aws.String(checkpointer.TableName),
 	}
-	_, err := checkpointer.svc.DescribeTable(context.Background(), input)
+	out, err := checkpointer.svc.DescribeTable(context.Background(), input)
+	if err != nil {
+		var notFound *types.ResourceNotFoundException
+		if errors.As(err, &notFound) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
 
-	return err == nil
+	if out == nil || out.Table == nil {
+		return true, true, nil
+	}
+	return true, out.Table.TableStatus != types.TableStatusCreating, nil
+}
+
+// How long Init waits for the lease table to become ACTIVE, and how often it
+// checks. Variables so tests can shorten them.
+var (
+	tableActiveTimeout  = 2 * time.Minute
+	tableActiveMinDelay = 1 * time.Second
+	tableActiveMaxDelay = 5 * time.Second
+)
+
+// waitUntilTableActive waits until the lease table is ACTIVE. A table that is
+// not visible yet (ResourceNotFoundException right after another worker
+// created it) is waited for as well.
+func (checkpointer *DynamoCheckpoint) waitUntilTableActive() error {
+	checkpointer.log.Infof("Waiting for lease table %s to become ACTIVE", checkpointer.TableName)
+	waiter := dynamodb.NewTableExistsWaiter(checkpointer.svc, func(o *dynamodb.TableExistsWaiterOptions) {
+		o.MinDelay = tableActiveMinDelay
+		o.MaxDelay = tableActiveMaxDelay
+	})
+	input := &dynamodb.DescribeTableInput{
+		TableName: aws.String(checkpointer.TableName),
+	}
+	if err := waiter.Wait(context.Background(), input, tableActiveTimeout); err != nil {
+		return fmt.Errorf("wait for lease table %s to become ACTIVE: %w", checkpointer.TableName, err)
+	}
+	return nil
 }
 
 func (checkpointer *DynamoCheckpoint) saveItem(item map[string]types.AttributeValue) error {
