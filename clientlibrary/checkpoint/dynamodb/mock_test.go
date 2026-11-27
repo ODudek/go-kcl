@@ -109,14 +109,26 @@ func (m *mockDynamoDB) GetItem(ctx context.Context, params *dynamodb.GetItemInpu
 
 func (m *mockDynamoDB) UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error) {
 	m.updateInput = params
-	exp := strings.ToLower(aws.ToString(params.UpdateExpression))
 
-	if strings.Contains(exp, "remove "+strings.ToLower(chk.LeaseOwnerKey)) {
-		delete(m.item, chk.LeaseOwnerKey)
-	}
-
-	if now, ok := params.ExpressionAttributeValues[":now"]; ok && strings.Contains(exp, "set "+strings.ToLower(chk.LeaseTimeoutKey)+" = :now") {
-		m.item[chk.LeaseTimeoutKey] = now
+	// Apply "REMOVE a, b SET c = :x, d = :y" (clauses in any order, keywords in
+	// any case) to the stored item. Conditions are not evaluated here.
+	tokens := strings.Fields(strings.ReplaceAll(aws.ToString(params.UpdateExpression), ",", " , "))
+	mode := ""
+	for i := 0; i < len(tokens); i++ {
+		switch strings.ToUpper(tokens[i]) {
+		case "REMOVE", "SET":
+			mode = strings.ToUpper(tokens[i])
+			continue
+		case ",":
+			continue
+		}
+		switch {
+		case mode == "REMOVE":
+			delete(m.item, tokens[i])
+		case mode == "SET" && i+2 < len(tokens) && tokens[i+1] == "=":
+			m.item[tokens[i]] = params.ExpressionAttributeValues[tokens[i+2]]
+			i += 2
+		}
 	}
 
 	return nil, nil

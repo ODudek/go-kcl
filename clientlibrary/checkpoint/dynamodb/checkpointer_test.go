@@ -732,3 +732,96 @@ func TestInit_GivesUpWhenTheTableDoesNotBecomeActive(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ACTIVE")
 }
+
+// replacingPutDynamoDB gives PutItem DynamoDB's semantics: the whole item is
+// replaced, so attributes the caller doesn't send are deleted.
+type replacingPutDynamoDB struct{ *mockDynamoDB }
+
+func (r replacingPutDynamoDB) PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error) {
+	item := map[string]types.AttributeValue{}
+	for k, v := range params.Item {
+		item[k] = v
+	}
+	r.mockDynamoDB.item = item
+	return &dynamodb.PutItemOutput{}, nil
+}
+
+// stringAttr returns a string attribute of item, or "" when it is missing.
+func stringAttr(item map[string]types.AttributeValue, key string) string {
+	if v, ok := item[key].(*types.AttributeValueMemberS); ok {
+		return v.Value
+	}
+	return ""
+}
+
+// leaseItem is a lease row for shard 0001 at checkpoint seq-1, with a pending
+// claim when claimer is set.
+func leaseItem(owner, claimer, timeout string) map[string]types.AttributeValue {
+	item := map[string]types.AttributeValue{
+		chk.LeaseKeyKey:       &types.AttributeValueMemberS{Value: "0001"},
+		chk.LeaseOwnerKey:     &types.AttributeValueMemberS{Value: owner},
+		chk.LeaseTimeoutKey:   &types.AttributeValueMemberS{Value: timeout},
+		chk.SequenceNumberKey: &types.AttributeValueMemberS{Value: "seq-1"},
+	}
+	if claimer != "" {
+		item[chk.ClaimRequestKey] = &types.AttributeValueMemberS{Value: claimer}
+	}
+	return item
+}
+
+// A checkpoint by the owner must not delete another worker's pending claim:
+// otherwise every checkpoint the owner makes while a steal is in progress
+// cancels the steal.
+func TestCheckpointSequenceKeepsAPendingClaim(t *testing.T) {
+	timeout := time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
+	svc := &mockDynamoDB{tableExist: true, item: leaseItem("abc", "thief", timeout)}
+	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
+	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(replacingPutDynamoDB{svc})
+
+	shard := &par.ShardStatus{ID: "0001", Mux: &sync.RWMutex{}}
+	shard.SetLeaseOwner("abc")
+	shard.SetCheckpoint("seq-2")
+	require.NoError(t, checkpoint.CheckpointSequence(shard))
+
+	assert.Equal(t, "seq-2", stringAttr(svc.item, chk.SequenceNumberKey))
+	assert.Equal(t, "thief", stringAttr(svc.item, chk.ClaimRequestKey), "the pending claim is kept")
+	assert.Equal(t, "abc", stringAttr(svc.item, chk.LeaseOwnerKey))
+	assert.Equal(t, timeout, stringAttr(svc.item, chk.LeaseTimeoutKey), "the lease timeout is left to GetLease")
+
+	require.NotNil(t, svc.updateInput)
+	assert.Equal(t, "AssignedTo = :assigned_to", aws.ToString(svc.updateInput.ConditionExpression))
+	assert.Equal(t, &types.AttributeValueMemberS{Value: "abc"}, svc.updateInput.ExpressionAttributeValues[":assigned_to"])
+}
+
+// A worker that has lost the shard must not write its checkpoint over the new
+// owner's, nor make itself the owner again.
+func TestCheckpointSequenceRefusesALeaseHeldByAnotherWorker(t *testing.T) {
+	timeout := time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
+	svc := &mockDynamoDB{tableExist: true, item: leaseItem("new-owner", "", timeout)}
+	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
+	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(ownerCheckingDynamoDB{svc})
+
+	shard := &par.ShardStatus{ID: "0001", Mux: &sync.RWMutex{}}
+	shard.SetLeaseOwner("abc")
+	shard.SetCheckpoint("stale-seq")
+	err := checkpoint.CheckpointSequence(shard)
+
+	require.ErrorAs(t, err, &chk.ErrLeaseNotAcquired{})
+	assert.Equal(t, "seq-1", stringAttr(svc.item, chk.SequenceNumberKey), "the new owner's checkpoint is kept")
+	assert.Equal(t, "new-owner", stringAttr(svc.item, chk.LeaseOwnerKey))
+}
+
+func TestCheckpointSequenceWritesTheParentShardID(t *testing.T) {
+	timeout := time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
+	svc := &mockDynamoDB{tableExist: true, item: leaseItem("abc", "", timeout)}
+	kclConfig := cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")
+	checkpoint := NewDynamoCheckpoint(kclConfig).WithDynamoDB(svc)
+
+	shard := &par.ShardStatus{ID: "0001", ParentShardId: "0000", Mux: &sync.RWMutex{}}
+	shard.SetLeaseOwner("abc")
+	shard.SetCheckpoint(chk.ShardEnd)
+	require.NoError(t, checkpoint.CheckpointSequence(shard))
+
+	assert.Equal(t, chk.ShardEnd, stringAttr(svc.item, chk.SequenceNumberKey))
+	assert.Equal(t, "0000", stringAttr(svc.item, chk.ParentShardIdKey))
+}
