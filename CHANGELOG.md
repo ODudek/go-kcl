@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `GetLease` (both) clears it after a successful lease, since the row loses `ClaimRequest` then and `acquireLeases` doesn't fetch shards this worker owns.
 
   `ShardStatus` gets `GetClaimRequest` / `SetClaimRequest`, and the worker reads the claim through them.
+- `TestRandomNum` no longer fails about 2% of the time. It used the current second as the string length, so at second 0 both strings were empty and at second 1 one-letter strings often matched; it now uses a fixed length of 32.
 
 ### Changed
 

@@ -23,7 +23,6 @@ package utils
 import (
 	"fmt"
 	"testing"
-	"time"
 )
 
 func TestRandom(t *testing.T) {
@@ -39,10 +38,14 @@ func TestRandom(t *testing.T) {
 }
 
 func TestRandomNum(t *testing.T) {
+	// The argument is the string length. It used to be the current second
+	// (0-59), so at second 0 both strings were empty, and at second 1 two
+	// one-letter strings matched 1 time in 52: the test failed about 2% of
+	// the time. 32 letters make a collision practically impossible.
+	const length = 32
 	for i := 0; i < 10; i++ {
-		seed := time.Now().UTC().Second()
-		s1 := RandStringBytesMaskImpr(seed)
-		s2 := RandStringBytesMaskImpr(seed)
+		s1 := RandStringBytesMaskImpr(length)
+		s2 := RandStringBytesMaskImpr(length)
 		if s1 == s2 {
 			t.Fatalf("failed in generating random string. s1: %s, s2: %s", s1, s2)
 		}
