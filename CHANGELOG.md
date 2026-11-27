@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-11-27
+
+### Fixed
+
+- A checkpoint no longer cancels another worker's pending lease steal ([#26](https://github.com/ODudek/go-kcl/issues/26)). The DynamoDB `CheckpointSequence` wrote the whole lease item with an unconditional `PutItem` that did not include `ClaimRequest`, so every checkpoint the owner made while a claim was pending deleted the claim, and the steal had to start over. `CheckpointSequence` is now a conditional `UpdateItem` that only sets `Checkpoint` (and `ParentShardId`); `ClaimRequest`, `AssignedTo` and `LeaseTimeout` are left as they are. This is what the claiming side ([#25](https://github.com/ODudek/go-kcl/issues/25)) and a graceful owner handover (the rest of [#26](https://github.com/ODudek/go-kcl/issues/26)) need to rely on the claim staying in place. The Redis checkpointer already kept it.
+- A worker that has lost a shard can no longer overwrite the new owner's checkpoint. The update is conditional on `AssignedTo` still being this worker; otherwise `CheckpointSequence` returns `ErrLeaseNotAcquired` and writes nothing. Before, the unconditional `PutItem` replaced the new owner's checkpoint and put the old worker back as the owner.
+
 ## [0.6.3] - 2026-11-25
 
 ### Fixed

@@ -241,29 +241,52 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 	return nil
 }
 
-// CheckpointSequence writes a checkpoint at the designated sequence ID
+// CheckpointSequence writes the shard's checkpoint (and parent shard ID, if
+// any) with a conditional UpdateItem:
+//   - Only the attributes it owns are set. A pending ClaimRequest, the lease
+//     owner and the lease timeout are left as they are: replacing the whole
+//     item would delete another worker's pending claim on every checkpoint,
+//     and the steal would have to start over.
+//   - The update is conditional on this worker still holding the lease, so a
+//     worker that has lost the shard can't write its checkpoint over the new
+//     owner's or put itself back as the owner; it gets ErrLeaseNotAcquired.
 func (checkpointer *DynamoCheckpoint) CheckpointSequence(shard *par.ShardStatus) error {
-	leaseTimeout := shard.GetLeaseTimeout().UTC().Format(time.RFC3339Nano)
-	marshalledCheckpoint := map[string]types.AttributeValue{
-		chk.LeaseKeyKey: &types.AttributeValueMemberS{
-			Value: shard.ID,
-		},
-		chk.SequenceNumberKey: &types.AttributeValueMemberS{
+	updateExpression := "SET " + chk.SequenceNumberKey + " = :checkpoint"
+	expressionAttributeValues := map[string]types.AttributeValue{
+		":checkpoint": &types.AttributeValueMemberS{
 			Value: shard.GetCheckpoint(),
 		},
-		chk.LeaseOwnerKey: &types.AttributeValueMemberS{
-			Value: shard.GetLeaseOwner(),
-		},
-		chk.LeaseTimeoutKey: &types.AttributeValueMemberS{
-			Value: leaseTimeout,
+		":assigned_to": &types.AttributeValueMemberS{
+			Value: checkpointer.kclConfig.WorkerID,
 		},
 	}
 
 	if len(shard.ParentShardId) > 0 {
-		marshalledCheckpoint[chk.ParentShardIdKey] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
+		updateExpression += ", " + chk.ParentShardIdKey + " = :parent_shard"
+		expressionAttributeValues[":parent_shard"] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
 	}
 
-	return checkpointer.saveItem(marshalledCheckpoint)
+	input := &dynamodb.UpdateItemInput{
+		TableName: aws.String(checkpointer.TableName),
+		Key: map[string]types.AttributeValue{
+			chk.LeaseKeyKey: &types.AttributeValueMemberS{
+				Value: shard.ID,
+			},
+		},
+		UpdateExpression:          aws.String(updateExpression),
+		ConditionExpression:       aws.String(chk.LeaseOwnerKey + " = :assigned_to"),
+		ExpressionAttributeValues: expressionAttributeValues,
+	}
+
+	if _, err := checkpointer.svc.UpdateItem(context.Background(), input); err != nil {
+		var conditionalCheckErr *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalCheckErr) {
+			return chk.ErrLeaseNotAcquired{Cause: fmt.Sprintf("checkpoint not written: shard %s is no longer leased to worker %s", shard.ID, checkpointer.kclConfig.WorkerID)}
+		}
+		return err
+	}
+
+	return nil
 }
 
 // FetchCheckpoint retrieves the checkpoint for the given shard
@@ -571,13 +594,6 @@ func (checkpointer *DynamoCheckpoint) waitUntilTableActive() error {
 		return fmt.Errorf("wait for lease table %s to become ACTIVE: %w", checkpointer.TableName, err)
 	}
 	return nil
-}
-
-func (checkpointer *DynamoCheckpoint) saveItem(item map[string]types.AttributeValue) error {
-	return checkpointer.putItem(&dynamodb.PutItemInput{
-		TableName: aws.String(checkpointer.TableName),
-		Item:      item,
-	})
 }
 
 func (checkpointer *DynamoCheckpoint) conditionalUpdate(conditionExpression string, expressionAttributeValues map[string]types.AttributeValue, item map[string]types.AttributeValue) error {
