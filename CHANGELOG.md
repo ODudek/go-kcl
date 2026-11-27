@@ -15,11 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `GetLease` (both) clears it after a successful lease, since the row loses `ClaimRequest` then and `acquireLeases` doesn't fetch shards this worker owns.
 
   `ShardStatus` gets `GetClaimRequest` / `SetClaimRequest`, and the worker reads the claim through them.
+- With lease stealing enabled, `acquireLeases` no longer tries to lease a shard another worker has a live claim on, and no longer logs that attempt as an error. `GetLease` already refused it with `ErrShardClaimed`, so nothing changes in the lease table; but `acquireLeases` never saw the claim, made a read and a conditional write that were bound to fail, and logged `Cannot get lease` at error level on every iteration (`ErrShardClaimed` isn't an `ErrLeaseNotAcquired`). It now skips the shard, which is the steal path `acquireLeases` was written for. The `rebalance()` steal guard also starts to see this worker's own claims, so it places new claims somewhat less often until the claiming side is reworked (#25).
 - `TestRandomNum` no longer fails about 2% of the time. It used the current second as the string length, so at second 0 both strings were empty and at second 1 one-letter strings often matched; it now uses a fixed length of 32.
-
-### Changed
-
-- **Behaviour change:** with lease stealing enabled, other workers now leave a claimed shard to the claiming worker during the claim window, even once its owner has released it, and the claiming worker takes it first. This is the intended steal path in `acquireLeases`, which never ran before because the claim was never in memory. The `rebalance()` steal guard also starts to see this worker's own claims, so it places new claims somewhat less often until the claiming side is reworked (#25).
 
 ## [0.6.4] - 2026-11-27
 

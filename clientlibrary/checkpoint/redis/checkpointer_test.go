@@ -679,7 +679,9 @@ func TestFetchCheckpoint_KeepsOwnLease(t *testing.T) {
 
 // The in-memory ClaimRequest follows the hash through a whole steal. The mock
 // scripter doesn't run Lua, so each step also applies the script's effect on
-// the hash (HSET ClaimRequest on claim, HDEL ClaimRequest on lease).
+// the hash by hand: the edits below mirror claimShardScript (HSET ClaimRequest)
+// and getLeaseScript (HDEL ClaimRequest). This covers the Go side only; if a
+// script stopped setting or removing ClaimRequest, this test would still pass.
 func TestClaimRequestInMemoryFollowsASteal(t *testing.T) {
 	mock := newMockRedisClient()
 	scripter := newMockScripter()
@@ -697,7 +699,7 @@ func TestClaimRequestInMemoryFollowsASteal(t *testing.T) {
 
 	scripter.setResult(cp.claimShardScript, "OK", nil)
 	require.NoError(t, cp.ClaimShard(shard, "worker-1"))
-	mock.data[key][chk.ClaimRequestKey] = "worker-1"
+	mock.data[key][chk.ClaimRequestKey] = "worker-1" // what claimShardScript writes
 	assert.Equal(t, "worker-1", shard.GetClaimRequest(), "claim: set on success")
 
 	require.NoError(t, cp.FetchCheckpoint(shard))
@@ -705,8 +707,8 @@ func TestClaimRequestInMemoryFollowsASteal(t *testing.T) {
 
 	scripter.setResult(cp.getLeaseScript, "OK", nil)
 	require.NoError(t, cp.GetLease(shard, "worker-1"))
-	mock.data[key][chk.LeaseOwnerKey] = "worker-1"
-	delete(mock.data[key], chk.ClaimRequestKey)
+	mock.data[key][chk.LeaseOwnerKey] = "worker-1" // what getLeaseScript writes
+	delete(mock.data[key], chk.ClaimRequestKey)    // and removes
 	assert.Equal(t, "", shard.GetClaimRequest(), "lease: cleared once the steal is complete")
 
 	require.NoError(t, cp.FetchCheckpoint(shard))
