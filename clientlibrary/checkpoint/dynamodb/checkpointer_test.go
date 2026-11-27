@@ -867,3 +867,54 @@ func TestFetchCheckpointClearsAStaleClaimRequest(t *testing.T) {
 	require.NoError(t, checkpoint.FetchCheckpoint(shard))
 	assert.Equal(t, "", shard.GetClaimRequest())
 }
+
+// scanDynamoDB answers Scan with fixed items, like a Scan of the lease table.
+type scanDynamoDB struct {
+	*mockDynamoDB
+	items []map[string]types.AttributeValue
+	input *dynamodb.ScanInput
+}
+
+func (s *scanDynamoDB) Scan(ctx context.Context, params *dynamodb.ScanInput, optFns ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+	s.input = params
+	return &dynamodb.ScanOutput{Items: s.items}, nil
+}
+
+// syncLeases (the view ListActiveWorkers and so rebalance() work on) keeps the
+// in-memory claim in step with the table, like FetchCheckpoint, also for a row
+// that has no owner or no checkpoint.
+func TestSyncLeasesRefreshesClaimRequest(t *testing.T) {
+	row := func(id, owner, checkpoint, claim string) map[string]types.AttributeValue {
+		item := map[string]types.AttributeValue{chk.LeaseKeyKey: &types.AttributeValueMemberS{Value: id}}
+		if owner != "" {
+			item[chk.LeaseOwnerKey] = &types.AttributeValueMemberS{Value: owner}
+		}
+		if checkpoint != "" {
+			item[chk.SequenceNumberKey] = &types.AttributeValueMemberS{Value: checkpoint}
+		}
+		if claim != "" {
+			item[chk.ClaimRequestKey] = &types.AttributeValueMemberS{Value: claim}
+		}
+		return item
+	}
+	svc := &scanDynamoDB{mockDynamoDB: &mockDynamoDB{item: map[string]types.AttributeValue{}}, items: []map[string]types.AttributeValue{
+		row("claimed", "owner", "seq-1", "thief"),
+		row("unclaimed", "owner", "seq-2", ""),
+		row("released", "", "seq-3", "thief"),
+	}}
+	checkpoint := NewDynamoCheckpoint(cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "abc")).WithDynamoDB(svc)
+
+	shards := map[string]*par.ShardStatus{}
+	for _, id := range []string{"claimed", "unclaimed", "released"} {
+		shards[id] = &par.ShardStatus{ID: id, Mux: &sync.RWMutex{}}
+	}
+	shards["unclaimed"].SetClaimRequest("thief") // stale: the claim is gone from the table
+
+	require.NoError(t, checkpoint.syncLeases(shards))
+	assert.Contains(t, aws.ToString(svc.input.ProjectionExpression), chk.ClaimRequestKey)
+	assert.Equal(t, "thief", shards["claimed"].GetClaimRequest())
+	assert.Equal(t, "", shards["unclaimed"].GetClaimRequest())
+	assert.Equal(t, "thief", shards["released"].GetClaimRequest(), "a released shard keeps its pending claim")
+	assert.Equal(t, "owner", shards["claimed"].GetLeaseOwner())
+	assert.Equal(t, "seq-1", shards["claimed"].GetCheckpoint())
+}

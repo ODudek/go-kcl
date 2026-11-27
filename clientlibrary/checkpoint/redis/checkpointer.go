@@ -428,6 +428,9 @@ func (c *RedisCheckpoint) syncLeases(shardStatus map[string]*par.ShardStatus) er
 		}
 
 		c.syncLeaseOwner(shard, data[chk.LeaseOwnerKey])
+		// Like FetchCheckpoint, so rebalance() counts pending claims from the
+		// same view it steals from.
+		shard.SetClaimRequest(data[chk.ClaimRequestKey])
 		if checkpoint, found := data[chk.SequenceNumberKey]; found && checkpoint != "" {
 			shard.SetCheckpoint(checkpoint)
 		}

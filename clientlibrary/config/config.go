@@ -100,10 +100,9 @@ const (
 	// stream due to the max limit.
 	DefaultMaxLeasesForWorker = math.MaxInt16
 
-	// DefaultMaxLeasesToStealAtOneTime Max leases to steal from another worker at one time (for load balancing).
-	// Setting this to a higher number can allow for faster load convergence (e.g. during deployments, cold starts),
-	// but can cause higher churn in the system.
-	DefaultMaxLeasesToStealAtOneTime = 1
+	// DefaultMaxLeasesToStealAtOneTime Max lease-stealing claims a worker has in flight at one time. 0 means no
+	// limit beyond the worker's share: a worker that joins claims all the shards it is short of in one pass.
+	DefaultMaxLeasesToStealAtOneTime = 0
 
 	// DefaultInitialLeaseTableReadCapacity The Amazon DynamoDB table used for tracking leases will be provisioned with this read capacity.
 	DefaultInitialLeaseTableReadCapacity = 10
@@ -258,7 +257,9 @@ type (
 		// Max leases this Worker can handle at a time
 		MaxLeasesForWorker int
 
-		// Max leases to steal at one time (for load balancing)
+		// MaxLeasesToStealAtOneTime caps the lease-stealing claims this worker has in flight at one time, pending
+		// claims included. 0 (the default) means no cap beyond the worker's share of the shards. A lower value
+		// spreads a rebalance over more iterations, at the cost of slower convergence.
 		MaxLeasesToStealAtOneTime int
 
 		// Read capacity to provision when creating the lease table (dynamoDB).

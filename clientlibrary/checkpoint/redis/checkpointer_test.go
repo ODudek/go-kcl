@@ -730,3 +730,24 @@ func TestClaimShard_ConditionalFailLeavesNoClaimInMemory(t *testing.T) {
 	require.Error(t, cp.ClaimShard(shard, "worker-1"))
 	assert.Equal(t, "", shard.GetClaimRequest())
 }
+
+// syncLeases (the view ListActiveWorkers and so rebalance() work on) keeps the
+// in-memory claim in step with the hash, like FetchCheckpoint.
+func TestSyncLeases_RefreshesClaimRequest(t *testing.T) {
+	mock := newMockRedisClient()
+	cp := newTestCheckpointer(mock, newMockScripter())
+	cp.lastLeaseSync = time.Time{}
+
+	mock.sets[cp.registryKey()] = map[string]bool{"claimed": true, "unclaimed": true}
+	mock.data[cp.shardKey("claimed")] = map[string]string{
+		chk.LeaseOwnerKey: "owner", chk.SequenceNumberKey: "seq-1", chk.ClaimRequestKey: "thief",
+	}
+	mock.data[cp.shardKey("unclaimed")] = map[string]string{chk.LeaseOwnerKey: "owner", chk.SequenceNumberKey: "seq-2"}
+
+	claimed, unclaimed := newShard("claimed"), newShard("unclaimed")
+	unclaimed.SetClaimRequest("thief") // stale: the claim is gone from the hash
+
+	require.NoError(t, cp.syncLeases(map[string]*par.ShardStatus{"claimed": claimed, "unclaimed": unclaimed}))
+	assert.Equal(t, "thief", claimed.GetClaimRequest())
+	assert.Equal(t, "", unclaimed.GetClaimRequest())
+}
