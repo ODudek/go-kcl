@@ -64,8 +64,7 @@ type Worker struct {
 
 	randomSeed int64
 
-	shardStatus          map[string]*par.ShardStatus
-	shardStealInProgress bool
+	shardStatus map[string]*par.ShardStatus
 
 	// consumers holds the IDs of the shards a consumer goroutine is reading.
 	// It, not the lease owner in shardStatus, tells which shards this worker
@@ -265,8 +264,9 @@ func (w *Worker) eventLoop() {
 			continue
 		}
 
+		tookLease := false
 		for _, shard := range w.acquireLeases() {
-			acquired = true
+			tookLease = true
 			w.startConsumer(shard)
 		}
 
@@ -276,7 +276,16 @@ func (w *Worker) eventLoop() {
 				log.Warnf("Error in rebalance: %+v", err)
 			}
 		}
+		acquired = w.wantsQuickLoop(tookLease)
 	}
+}
+
+// wantsQuickLoop reports whether eventLoop should come back after
+// LeaseAcquisitionIntervalMillis instead of ShardSyncIntervalMillis: after an
+// iteration that took a lease, or while this worker has a lease-stealing claim
+// pending, since the claimed shard is taken as soon as its owner releases it.
+func (w *Worker) wantsQuickLoop(tookLease bool) bool {
+	return tookLease || (w.kclConfig.EnableLeaseStealing && w.livePendingClaims() > 0)
 }
 
 // startConsumer reads a just-leased shard in a new goroutine. The shard counts
@@ -373,7 +382,6 @@ func (w *Worker) acquireLeases() []*par.ShardStatus {
 
 		if stealShard {
 			log.Debugf("Successfully stole shard: %+v", shard.ID)
-			w.shardStealInProgress = false
 		}
 
 		// log metrics on got lease
@@ -384,15 +392,18 @@ func (w *Worker) acquireLeases() []*par.ShardStatus {
 	return acquired
 }
 
-// leaseShare returns how many open shards this worker consumes and how many it
-// should: ceil(open shards / active workers), capped at MaxLeasesForWorker. A
-// worker is active while it holds an unexpired lease (an unknown timeout counts
-// as unexpired, which only makes the share smaller); this worker always counts.
-// A lease of this worker's own on a shard it does not consume counts as free.
-func (w *Worker) leaseShare() (held, target int) {
+// activeWorkers returns the open shards each active worker holds, keyed by
+// worker ID, and the number of open shards. A worker is active while it holds
+// an unexpired lease (an unknown timeout counts as unexpired); this worker is
+// always active, and its shards are the ones it consumes. A lease of this
+// worker's own on a shard it does not consume, and a shard whose lease has
+// expired, belong to nobody: they are free for acquireLeases.
+//
+// leaseShare and rebalance both count workers through this, so the claiming
+// side and the acquiring side agree on how many workers there are.
+func (w *Worker) activeWorkers() (workers map[string][]*par.ShardStatus, open int) {
 	now := time.Now()
-	workers := map[string]bool{w.workerID: true}
-	open := 0
+	workers = map[string][]*par.ShardStatus{w.workerID: nil}
 	for _, shard := range w.shardStatus {
 		if shard.GetCheckpoint() == chk.ShardEnd {
 			continue
@@ -400,15 +411,24 @@ func (w *Worker) leaseShare() (held, target int) {
 		open++
 		switch owner := shard.GetLeaseOwner(); {
 		case w.isConsuming(shard.ID):
-			held++
+			workers[w.workerID] = append(workers[w.workerID], shard)
 		case owner == w.workerID:
 			// left behind by a failed release; acquireLeases leases it again
 		case owner != "":
 			if timeout := shard.GetLeaseTimeout(); timeout.IsZero() || timeout.After(now) {
-				workers[owner] = true
+				workers[owner] = append(workers[owner], shard)
 			}
 		}
 	}
+	return workers, open
+}
+
+// leaseShare returns how many open shards this worker consumes and how many it
+// should: ceil(open shards / active workers), capped at MaxLeasesForWorker.
+// Rounding up makes acquireLeases take every free shard between the workers.
+func (w *Worker) leaseShare() (held, target int) {
+	workers, open := w.activeWorkers()
+	held = len(workers[w.workerID])
 	target = (open + len(workers) - 1) / len(workers)
 	if target > w.kclConfig.MaxLeasesForWorker {
 		target = w.kclConfig.MaxLeasesForWorker
@@ -416,10 +436,27 @@ func (w *Worker) leaseShare() (held, target int) {
 	return held, target
 }
 
+// livePendingClaims counts the open shards this worker has claimed for lease
+// stealing and doesn't consume yet, with a claim that hasn't expired. An
+// expired claim no longer reserves the shard, so it must not block a new one.
+func (w *Worker) livePendingClaims() int {
+	pending := 0
+	for _, shard := range w.shardStatus {
+		if shard.GetCheckpoint() == chk.ShardEnd || w.isConsuming(shard.ID) {
+			continue
+		}
+		if shard.GetClaimRequest() == w.workerID && !shard.IsClaimRequestExpired(w.kclConfig) {
+			pending++
+		}
+	}
+	return pending
+}
+
 // nextLoopDelayMillis is how long eventLoop waits before its next shard sync:
 // nothing before the first one, so a starting worker leases and reads at once;
-// LeaseAcquisitionIntervalMillis after an iteration that took a lease, so shards
-// contended or released meanwhile follow within seconds; ShardSyncIntervalMillis
+// LeaseAcquisitionIntervalMillis after an iteration that took a lease or left a
+// lease-stealing claim pending, so shards contended, released or handed over
+// meanwhile follow within seconds; ShardSyncIntervalMillis
 // otherwise. Both get [-50%, +50%] jitter: workers that start together then do
 // not call Kinesis ListShards in lockstep and hit the API limit, and on average
 // the period stays the same.
@@ -435,96 +472,108 @@ func nextLoopDelayMillis(cfg *config.KinesisClientLibConfiguration, first, acqui
 	return interval/2 + int(rnd.Int64())
 }
 
+// rebalance claims shards from other workers, for lease stealing, until this
+// worker would hold its share: floor(open shards / active workers), capped at
+// MaxLeasesForWorker. It counts the shards it consumes and its live pending
+// claims, so it never claims more than it will take. Each claim goes to the
+// worker that is furthest above that share, recomputed after every claim, and
+// a worker is never taken below it.
+//
+// The share is rounded down here and up in leaseShare: claiming up to the
+// rounded-up share would make workers keep taking shards from each other when
+// the shards don't divide evenly, while acquireLeases, aiming for the rounded-up
+// share, always takes the shards claimed here.
+//
+// MaxLeasesToStealAtOneTime caps the claims in flight; 0 means no cap beyond
+// the share.
 func (w *Worker) rebalance() error {
 	log := w.kclConfig.Logger
 
-	workers, err := w.checkpointer.ListActiveWorkers(w.shardStatus)
-	if err != nil {
+	// Refreshes the lease owners and claims from the checkpointer before
+	// counting (syncLeases).
+	if _, err := w.checkpointer.ListActiveWorkers(w.shardStatus); err != nil {
 		log.Debugf("Error listing workers. workerID: %s. Error: %+v ", w.workerID, err)
 		return err
 	}
 
-	// A free shard is picked up by the lease path in eventLoop; stealing while
-	// one exists would only move load that is about to even out on its own.
-	for _, shard := range w.shardStatus {
-		if shard.GetCheckpoint() != chk.ShardEnd && shard.GetLeaseOwner() == "" {
-			log.Debugf("Not all shards are allocated, not stealing any. workerID: %s", w.workerID)
-			return nil
-		}
-	}
-
-	// Only attempt to steal one shard at time, to allow for linear convergence
-	if w.shardStealInProgress {
-		shardInfo := make(map[string]bool)
-		err := w.getShardIDs("", shardInfo)
-		if err != nil {
-			return err
-		}
-		for _, shard := range w.shardStatus {
-			if claim := shard.GetClaimRequest(); claim != "" && claim == w.workerID {
-				log.Debugf("Steal in progress. workerID: %s", w.workerID)
-				return nil
-			}
-			// Our shard steal was stomped on by a Checkpoint.
-			// We could deal with that, but instead just try again
-			w.shardStealInProgress = false
-		}
-	}
-
-	var numShards int
+	workers, open := w.activeWorkers()
+	assigned := 0
 	for _, shards := range workers {
-		numShards += len(shards)
+		assigned += len(shards)
 	}
-
-	numWorkers := len(workers)
-
-	// 1:1 shards to workers is optimal, so we cannot possibly rebalance
-	if numWorkers >= numShards {
-		log.Debugf("Optimal shard allocation, not stealing any shards. workerID: %s, %v > %v. ", w.workerID, numWorkers, numShards)
+	// A free shard (no owner, an expired lease, or a lease of this worker's
+	// own it doesn't consume) is picked up by the lease path in eventLoop;
+	// stealing while one exists would only move load that is about to even
+	// out on its own.
+	if assigned < open {
+		log.Debugf("Not all shards are allocated, not stealing any. workerID: %s", w.workerID)
 		return nil
 	}
 
-	currentShards, ok := workers[w.workerID]
-	var numCurrentShards int
-	if !ok {
-		numCurrentShards = 0
-		numWorkers++
-	} else {
-		numCurrentShards = len(currentShards)
+	share := open / len(workers)
+	if share > w.kclConfig.MaxLeasesForWorker {
+		share = w.kclConfig.MaxLeasesForWorker
 	}
-
-	optimalShards := numShards / numWorkers
-
-	// We have more than or equal optimal shards, so no rebalancing can take place
-	if numCurrentShards >= optimalShards || numCurrentShards == w.kclConfig.MaxLeasesForWorker {
+	pending := w.livePendingClaims()
+	deficit := share - len(workers[w.workerID]) - pending
+	if limit := w.kclConfig.MaxLeasesToStealAtOneTime; limit > 0 && limit-pending < deficit {
+		deficit = limit - pending
+	}
+	if deficit <= 0 {
 		log.Debugf("We have enough shards, not attempting to steal any. workerID: %s", w.workerID)
 		return nil
 	}
 
-	var workerSteal string
+	// How many shards each other worker would still have once the shards
+	// claimed from it (by this worker or anyone else) move away, and which of
+	// its shards can still be claimed.
+	remaining := map[string]int{}
+	claimable := map[string][]*par.ShardStatus{}
 	for worker, shards := range workers {
-		if worker != w.workerID && len(shards) > optimalShards {
-			workerSteal = worker
-			optimalShards = len(shards)
+		if worker == w.workerID {
+			continue
+		}
+		for _, shard := range shards {
+			if shard.GetClaimRequest() != "" {
+				continue
+			}
+			remaining[worker]++
+			claimable[worker] = append(claimable[worker], shard)
 		}
 	}
-	// Not all shards are allocated so fallback to default shard allocation mechanisms
-	if workerSteal == "" {
-		log.Infof("Not all shards are allocated, not stealing any. workerID: %s", w.workerID)
-		return nil
-	}
 
-	// Steal a random shard from the worker with the most shards
-	w.shardStealInProgress = true
-	rnd, _ := rand.Int(rand.Reader, big.NewInt(int64(len(workers[workerSteal]))))
-	randIndex := int(rnd.Int64())
-	shardToSteal := workers[workerSteal][randIndex]
-	log.Debugf("Stealing shard %s from %s", shardToSteal, workerSteal)
+	for ; deficit > 0; deficit-- {
+		victim := ""
+		for worker, n := range remaining {
+			if n <= share || len(claimable[worker]) == 0 {
+				continue
+			}
+			if victim == "" || n > remaining[victim] || (n == remaining[victim] && worker < victim) {
+				victim = worker
+			}
+		}
+		if victim == "" {
+			log.Debugf("No worker above its share of %d, not stealing any more. workerID: %s", share, w.workerID)
+			return nil
+		}
 
-	err = w.checkpointer.ClaimShard(w.shardStatus[shardToSteal.ID], w.workerID)
-	if err != nil {
-		w.shardStealInProgress = false
-		return err
+		rnd, _ := rand.Int(rand.Reader, big.NewInt(int64(len(claimable[victim]))))
+		i := int(rnd.Int64())
+		shard := claimable[victim][i]
+		claimable[victim] = append(claimable[victim][:i], claimable[victim][i+1:]...)
+
+		log.Debugf("Stealing shard %s from %s", shard.ID, victim)
+		if err := w.checkpointer.ClaimShard(shard, w.workerID); err != nil {
+			// The shard changed since it was read (a checkpoint, a renewal or
+			// another worker's claim): try another one, up to the deficit.
+			if errors.As(err, &chk.ErrLeaseNotAcquired{}) {
+				log.Debugf("Could not claim shard %s: %+v", shard.ID, err)
+				deficit++
+				continue
+			}
+			return err
+		}
+		remaining[victim]--
 	}
 	return nil
 }

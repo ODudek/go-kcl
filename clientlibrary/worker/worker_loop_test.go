@@ -176,6 +176,9 @@ type fakeCheckpointer struct {
 	claims []string
 	store  map[string]*storedLease
 	leased []string
+	// lostClaims makes ClaimShard fail for these shards, as a checkpointer
+	// does when the lease changed since it was read.
+	lostClaims map[string]bool
 }
 
 func (f *fakeCheckpointer) Init() error                               { return nil }
@@ -216,7 +219,11 @@ func (f *fakeCheckpointer) RemoveLeaseInfo(string) error         { return nil }
 func (f *fakeCheckpointer) RemoveLeaseOwner(string) error        { return nil }
 func (f *fakeCheckpointer) GetLeaseOwner(string) (string, error) { return "", nil }
 func (f *fakeCheckpointer) ClaimShard(s *par.ShardStatus, w string) error {
+	if f.lostClaims[s.ID] {
+		return chk.ErrLeaseNotAcquired{Cause: "lease changed"}
+	}
 	f.claims = append(f.claims, s.ID)
+	s.SetClaimRequest(w)
 	return nil
 }
 func (f *fakeCheckpointer) ListActiveWorkers(shards map[string]*par.ShardStatus) (map[string][]*par.ShardStatus, error) {
@@ -244,7 +251,33 @@ func newRebalanceWorker(cp chk.Checkpointer, shards ...*par.ShardStatus) *Worker
 	for _, s := range shards {
 		status[s.ID] = s
 	}
-	return &Worker{workerID: "worker-1", kclConfig: cfg, checkpointer: cp, shardStatus: status}
+	return &Worker{workerID: "worker-1", kclConfig: cfg, checkpointer: cp, shardStatus: status, consumers: map[string]bool{}}
+}
+
+// ownedShards returns one shard owned by owner per id.
+func ownedShards(owner string, ids ...string) []*par.ShardStatus {
+	shards := make([]*par.ShardStatus, 0, len(ids))
+	for _, id := range ids {
+		shards = append(shards, ownedShard(id, owner))
+	}
+	return shards
+}
+
+// claimedFrom counts the claims placed on the shards of each owner.
+func claimedFrom(w *Worker, cp *fakeCheckpointer) map[string]int {
+	byOwner := map[string]int{}
+	for _, id := range cp.claims {
+		byOwner[w.shardStatus[id].GetLeaseOwner()]++
+	}
+	return byOwner
+}
+
+func shardsOf(groups ...[]*par.ShardStatus) []*par.ShardStatus {
+	var all []*par.ShardStatus
+	for _, g := range groups {
+		all = append(all, g...)
+	}
+	return all
 }
 
 // A free shard is picked up by the normal lease path; until it is, rebalance
@@ -258,7 +291,6 @@ func TestRebalance_UnallocatedShardSkipsStealingWithoutError(t *testing.T) {
 
 	require.NoError(t, w.rebalance())
 	assert.Empty(t, cp.claims)
-	assert.False(t, w.shardStealInProgress)
 }
 
 func TestRebalance_StealsFromTheBusiestWorkerWhenAllShardsAreAllocated(t *testing.T) {
@@ -268,8 +300,7 @@ func TestRebalance_StealsFromTheBusiestWorkerWhenAllShardsAreAllocated(t *testin
 		ownedShard("s3", "worker-2"), ownedShard("s4", "worker-2"))
 
 	require.NoError(t, w.rebalance())
-	assert.Len(t, cp.claims, 1)
-	assert.True(t, w.shardStealInProgress)
+	assert.Len(t, cp.claims, 2, "4 shards over 2 workers: the whole share in one pass")
 }
 
 func TestRebalance_ClosedShardsDoNotCountAsUnallocated(t *testing.T) {
@@ -281,7 +312,7 @@ func TestRebalance_ClosedShardsDoNotCountAsUnallocated(t *testing.T) {
 		ownedShard("s3", "worker-2"), ownedShard("s4", "worker-2"), closed)
 
 	require.NoError(t, w.rebalance())
-	assert.Len(t, cp.claims, 1)
+	assert.Len(t, cp.claims, 2)
 }
 
 // releasedClaimedShard is a store holding s1, just released by its owner (no
@@ -308,4 +339,156 @@ func TestAcquireLeases_ClaimerTakesTheShardItClaimed(t *testing.T) {
 
 	assert.Len(t, w.acquireLeases(), 1)
 	assert.Equal(t, []string{"s1"}, cp.leased)
+}
+
+// A joining worker claims its whole share in one pass, from the workers that are
+// furthest above it, and leaves nobody below it: 10 shards over 4 workers end at
+// 2/2/3/3 once the claimed shards move.
+func TestRebalance_ClaimsTheWholeShareInOnePassFromTheBusiestWorkers(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	w := newRebalanceWorker(cp, shardsOf(
+		ownedShards("worker-2", "s1", "s2", "s3", "s4"),
+		ownedShards("worker-3", "s5", "s6", "s7"),
+		ownedShards("worker-4", "s8", "s9", "s10"))...)
+
+	require.NoError(t, w.rebalance())
+	assert.Len(t, cp.claims, 2, "share = floor(10 / 4) = 2")
+	assert.Equal(t, map[string]int{"worker-2": 2}, claimedFrom(w, cp), "worker-2 goes from 4 to 2; workers 3 and 4 keep 3")
+}
+
+func TestRebalance_NeverTakesAWorkerBelowItsShare(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	w := newRebalanceWorker(cp, shardsOf(
+		ownedShards("worker-2", "s1", "s2", "s3", "s4", "s5"),
+		ownedShards("worker-3", "s6", "s7"))...)
+
+	require.NoError(t, w.rebalance())
+	assert.Equal(t, map[string]int{"worker-2": 2}, claimedFrom(w, cp), "share = floor(7 / 3) = 2; worker-3 is at it")
+}
+
+// With the rounded-down share, a worker at the share doesn't claim: with the
+// rounded-up one, workers at 2 would keep taking shards from workers at 3.
+func TestRebalance_DoesNotOscillateWhenTheShardsDontDivideEvenly(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	mine := ownedShards("worker-1", "s1", "s2")
+	w := newRebalanceWorker(cp, shardsOf(mine,
+		ownedShards("worker-2", "s3", "s4", "s5"),
+		ownedShards("worker-3", "s6", "s7", "s8"),
+		ownedShards("worker-4", "s9", "s10"))...)
+	for _, s := range mine {
+		w.setConsuming(s.ID, true)
+	}
+
+	require.NoError(t, w.rebalance())
+	assert.Empty(t, cp.claims, "2/3/3/2 is balanced")
+}
+
+func TestRebalance_CountsLivePendingClaims(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	shards := ownedShards("worker-2", "s1", "s2", "s3", "s4")
+	shards[0].SetClaimRequest("worker-1")
+	w := newRebalanceWorker(cp, shards...)
+
+	require.NoError(t, w.rebalance())
+	assert.Len(t, cp.claims, 1, "share 2, one claim already pending")
+	assert.NotContains(t, cp.claims, "s1")
+	assert.Equal(t, 2, w.livePendingClaims())
+}
+
+// An expired claim no longer reserves the shard, so it must not count, or it
+// would block the next claim.
+func TestRebalance_ExpiredClaimDoesNotCount(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	shards := ownedShards("worker-2", "s1", "s2", "s3", "s4")
+	for _, s := range shards {
+		s.SetLeaseTimeout(time.Now().Add(time.Minute))
+	}
+	shards[0].SetClaimRequest("worker-1")
+	shards[0].SetLeaseTimeout(time.Now().Add(-time.Hour)) // expired lease, so the claim has expired too
+	w := newRebalanceWorker(cp, shards...)
+	require.Equal(t, 0, w.livePendingClaims())
+
+	require.NoError(t, w.rebalance())
+	assert.Empty(t, cp.claims, "s1 is free (expired lease): the lease path takes it, no stealing")
+}
+
+func TestRebalance_MaxLeasesToStealAtOneTimeCapsClaimsInFlight(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	w := newRebalanceWorker(cp, ownedShards("worker-2", "s1", "s2", "s3", "s4", "s5", "s6")...)
+	w.kclConfig.MaxLeasesToStealAtOneTime = 2
+
+	require.NoError(t, w.rebalance())
+	assert.Len(t, cp.claims, 2, "share 3, but at most 2 in flight")
+
+	require.NoError(t, w.rebalance())
+	assert.Len(t, cp.claims, 2, "both still pending: no new claim")
+}
+
+func TestRebalance_RespectsMaxLeasesForWorker(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	w := newRebalanceWorker(cp, ownedShards("worker-2", "s1", "s2", "s3", "s4")...)
+	w.kclConfig.MaxLeasesForWorker = 1
+
+	require.NoError(t, w.rebalance())
+	assert.Len(t, cp.claims, 1)
+}
+
+// Shards another worker has claimed are on their way to it: they are neither
+// claimed again nor counted as the victim's.
+func TestRebalance_SkipsShardsClaimedByAnotherWorker(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	shards := ownedShards("worker-2", "s1", "s2", "s3", "s4", "s5", "s6")
+	shards[0].SetClaimRequest("worker-3")
+	w := newRebalanceWorker(cp, shards...)
+
+	require.NoError(t, w.rebalance())
+	assert.NotContains(t, cp.claims, "s1")
+	assert.Len(t, cp.claims, 2, "share 3 of 6; worker-2 keeps at least 3 of the 5 not claimed yet")
+}
+
+// A claim lost to a concurrent change (checkpoint, renewal, other claim) is
+// skipped and another shard is claimed instead, up to the deficit.
+func TestRebalance_TriesAnotherShardWhenAClaimIsLost(t *testing.T) {
+	cp := &fakeCheckpointer{lostClaims: map[string]bool{"s1": true, "s2": true}}
+	w := newRebalanceWorker(cp, ownedShards("worker-2", "s1", "s2", "s3", "s4", "s5", "s6")...)
+
+	require.NoError(t, w.rebalance())
+	assert.Len(t, cp.claims, 3)
+	assert.NotContains(t, cp.claims, "s1")
+	assert.NotContains(t, cp.claims, "s2")
+}
+
+func TestRebalance_ExpiredLeaseCountsAsFreeNotAsAWorker(t *testing.T) {
+	cp := &fakeCheckpointer{}
+	shards := ownedShards("worker-2", "s1", "s2", "s3", "s4")
+	shards[3].SetLeaseOwner("worker-gone")
+	shards[3].SetLeaseTimeout(time.Now().Add(-time.Minute))
+	w := newRebalanceWorker(cp, shards...)
+
+	require.NoError(t, w.rebalance())
+	assert.Empty(t, cp.claims, "s4 is free: acquireLeases takes it first")
+}
+
+// While a lease-stealing claim is pending, eventLoop comes back after
+// LeaseAcquisitionIntervalMillis, so the claimed shard is taken soon after its
+// owner releases it instead of after a full ShardSyncIntervalMillis.
+func TestWantsQuickLoop(t *testing.T) {
+	claimed := ownedShard("s1", "worker-2")
+	claimed.SetLeaseTimeout(time.Now().Add(time.Minute))
+	claimed.SetClaimRequest("worker-1")
+	w := newRebalanceWorker(&fakeCheckpointer{}, claimed, ownedShard("s2", "worker-2"))
+
+	assert.True(t, w.wantsQuickLoop(false), "a live claim is pending")
+	assert.True(t, w.wantsQuickLoop(true), "took a lease")
+
+	claimed.SetClaimRequest("")
+	assert.False(t, w.wantsQuickLoop(false), "nothing taken, nothing pending")
+
+	claimed.SetClaimRequest("worker-1")
+	claimed.SetLeaseTimeout(time.Now().Add(-time.Hour))
+	assert.False(t, w.wantsQuickLoop(false), "an expired claim isn't pending")
+
+	claimed.SetLeaseTimeout(time.Now().Add(time.Minute))
+	w.kclConfig.EnableLeaseStealing = false
+	assert.False(t, w.wantsQuickLoop(false), "without lease stealing, claims are ignored")
 }

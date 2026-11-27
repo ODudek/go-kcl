@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.6] - 2026-11-27
+
+### Changed
+
+- **Lease stealing claims a worker's whole share in one pass** ([#25](https://github.com/ODudek/go-kcl/issues/25)). `rebalance()` was meant to keep one steal in flight, but its guard reset itself, so a joining worker placed a claim every one or two `eventLoop` iterations without counting the claims already pending. It could claim more shards than it was short of; `acquireLeases` stopped at its target and left the extra ones, whose claim still blocked the owner's renewal, so those shards went unread until the claim expired (up to `LeaseStealingClaimTimeoutMillis`, 120s by default). Now `rebalance()`:
+  - claims `floor(open shards / active workers)`, capped at `MaxLeasesForWorker`, minus the shards it consumes and its live pending claims (its own, not expired, on shards it doesn't consume yet). Rounding down keeps workers from taking shards from each other when the shards don't divide evenly; `acquireLeases` keeps rounding up, so it always takes the shards claimed here;
+  - takes each claim from the worker furthest above that share, recomputed after every claim, and never takes a worker below it. Shards another worker has already claimed are left alone;
+  - skips a shard whose claim fails because the lease changed meanwhile, and claims another one instead.
+
+  `shardStealInProgress` is gone; the state is the in-memory `ClaimRequest`. `rebalance()` no longer calls `ListShards` a second time per iteration.
+- **`MaxLeasesToStealAtOneTime` is now read**: it caps the claims in flight, pending ones included. Its default changes from 1 to **0**, meaning no cap beyond the share. Set it to 1 to keep a single claim in flight at a time.
+- While this worker has a claim pending, `eventLoop` waits `LeaseAcquisitionIntervalMillis` instead of `ShardSyncIntervalMillis` before its next iteration, so a shard is taken within about 2s of its owner releasing it rather than after a full shard sync interval (60s by default).
+- `leaseShare()` and `rebalance()` count active workers through the same helper: an owner counts while its lease hasn't expired. Before, the claiming side also counted owners with expired leases.
+- `syncLeases` (DynamoDB and Redis), which `ListActiveWorkers` and so `rebalance()` read, now also refreshes the in-memory `ClaimRequest` from the table, like `FetchCheckpoint`, so pending claims are counted from the same view the claims are placed from.
+- DynamoDB `ClaimShard` returns `ErrLeaseNotAcquired` when its condition fails (the lease changed since it was read), as the Redis checkpointer already did, instead of the raw `ConditionalCheckFailedException`. `rebalance()` relies on it to tell a lost claim from a real error; callers that check for `ConditionalCheckFailedException` themselves should check for `ErrLeaseNotAcquired` instead.
+
 ## [0.6.5] - 2026-11-27
 
 ### Fixed

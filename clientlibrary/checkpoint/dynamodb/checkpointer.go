@@ -491,6 +491,12 @@ func (checkpointer *DynamoCheckpoint) ClaimShard(shard *par.ShardStatus, claimID
 	}
 
 	if err := checkpointer.conditionalUpdate(conditionalExpression, expressionAttributeValues, marshalledCheckpoint); err != nil {
+		// The lease changed since it was read (a checkpoint, a renewal or
+		// another claim): the same error the Redis checkpointer returns.
+		var conditionalCheckErr *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalCheckErr) {
+			return chk.ErrLeaseNotAcquired{Cause: conditionalCheckErr.ErrorMessage()}
+		}
 		return err
 	}
 	shard.SetClaimRequest(claimID)
@@ -506,7 +512,7 @@ func (checkpointer *DynamoCheckpoint) syncLeases(shardStatus map[string]*par.Sha
 
 	checkpointer.lastLeaseSync = time.Now()
 	input := &dynamodb.ScanInput{
-		ProjectionExpression: aws.String(fmt.Sprintf("%s,%s,%s", chk.LeaseKeyKey, chk.LeaseOwnerKey, chk.SequenceNumberKey)),
+		ProjectionExpression: aws.String(fmt.Sprintf("%s,%s,%s,%s", chk.LeaseKeyKey, chk.LeaseOwnerKey, chk.SequenceNumberKey, chk.ClaimRequestKey)),
 		Select:               "SPECIFIC_ATTRIBUTES",
 		TableName:            aws.String(checkpointer.kclConfig.TableName),
 	}
@@ -521,16 +527,29 @@ func (checkpointer *DynamoCheckpoint) syncLeases(shardStatus map[string]*par.Sha
 	results := scanOutput.Items
 	for _, result := range results {
 		shardId, foundShardId := result[chk.LeaseKeyKey]
-		assignedTo, foundAssignedTo := result[chk.LeaseOwnerKey]
-		checkpoint, foundCheckpoint := result[chk.SequenceNumberKey]
-		if !foundShardId || !foundAssignedTo || !foundCheckpoint {
+		if !foundShardId {
+			continue
+		}
+		shard, ok := shardStatus[shardId.(*types.AttributeValueMemberS).Value]
+		if !ok {
 			continue
 		}
 
-		if shard, ok := shardStatus[shardId.(*types.AttributeValueMemberS).Value]; ok {
-			shard.SetLeaseOwner(assignedTo.(*types.AttributeValueMemberS).Value)
-			shard.SetCheckpoint(checkpoint.(*types.AttributeValueMemberS).Value)
+		// The claim is refreshed for every row, like FetchCheckpoint does, so
+		// rebalance() counts pending claims from the same view it steals from.
+		claimRequest := ""
+		if claim, ok := result[chk.ClaimRequestKey].(*types.AttributeValueMemberS); ok {
+			claimRequest = claim.Value
 		}
+		shard.SetClaimRequest(claimRequest)
+
+		assignedTo, foundAssignedTo := result[chk.LeaseOwnerKey]
+		checkpoint, foundCheckpoint := result[chk.SequenceNumberKey]
+		if !foundAssignedTo || !foundCheckpoint {
+			continue
+		}
+		shard.SetLeaseOwner(assignedTo.(*types.AttributeValueMemberS).Value)
+		shard.SetCheckpoint(checkpoint.(*types.AttributeValueMemberS).Value)
 	}
 
 	log.Debugf("Lease sync completed. Next lease sync will occur in %s", time.Duration(checkpointer.kclConfig.LeaseSyncingTimeIntervalMillis)*time.Millisecond)
