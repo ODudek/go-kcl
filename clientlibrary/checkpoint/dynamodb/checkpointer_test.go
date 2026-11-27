@@ -825,3 +825,45 @@ func TestCheckpointSequenceWritesTheParentShardID(t *testing.T) {
 	assert.Equal(t, chk.ShardEnd, stringAttr(svc.item, chk.SequenceNumberKey))
 	assert.Equal(t, "0000", stringAttr(svc.item, chk.ParentShardIdKey))
 }
+
+// The in-memory ClaimRequest follows the row through a whole steal: it is read
+// by FetchCheckpoint, set by ClaimShard, survives the owner's release, and is
+// cleared by the claimer's GetLease and the next FetchCheckpoint.
+func TestClaimRequestInMemoryFollowsASteal(t *testing.T) {
+	svc := &mockDynamoDB{tableExist: true, item: leaseItem("owner", "", time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano))}
+	db := replacingPutDynamoDB{svc}
+	thief := NewDynamoCheckpoint(cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "thief").WithLeaseStealing(true)).WithDynamoDB(db)
+	owner := NewDynamoCheckpoint(cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "owner").WithLeaseStealing(true)).WithDynamoDB(db)
+	shard := &par.ShardStatus{ID: "0001", Mux: &sync.RWMutex{}}
+
+	require.NoError(t, thief.FetchCheckpoint(shard))
+	assert.Equal(t, "", shard.GetClaimRequest(), "fetch: no claim yet")
+
+	require.NoError(t, thief.ClaimShard(shard, "thief"))
+	assert.Equal(t, "thief", shard.GetClaimRequest(), "claim: set on success")
+
+	require.NoError(t, thief.FetchCheckpoint(shard))
+	assert.Equal(t, "thief", shard.GetClaimRequest(), "fetch: read from the row")
+
+	require.NoError(t, owner.RemoveLeaseOwner("0001"))
+	require.NoError(t, thief.FetchCheckpoint(shard))
+	assert.Equal(t, "thief", shard.GetClaimRequest(), "fetch: the claim survives the owner's release")
+
+	require.NoError(t, thief.GetLease(shard, "thief"))
+	assert.Equal(t, "", shard.GetClaimRequest(), "lease: cleared once the steal is complete")
+
+	require.NoError(t, thief.FetchCheckpoint(shard))
+	assert.Equal(t, "", shard.GetClaimRequest(), "fetch: the row has no claim any more")
+}
+
+// A claim that is gone from the row (expired and overwritten, or cancelled)
+// must not stay in memory.
+func TestFetchCheckpointClearsAStaleClaimRequest(t *testing.T) {
+	svc := &mockDynamoDB{tableExist: true, item: leaseItem("owner", "", time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano))}
+	checkpoint := NewDynamoCheckpoint(cfg.NewKinesisClientLibConfig("appName", "test", "us-west-2", "thief")).WithDynamoDB(svc)
+	shard := &par.ShardStatus{ID: "0001", Mux: &sync.RWMutex{}}
+	shard.SetClaimRequest("thief")
+
+	require.NoError(t, checkpoint.FetchCheckpoint(shard))
+	assert.Equal(t, "", shard.GetClaimRequest())
+}

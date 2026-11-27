@@ -165,6 +165,7 @@ type storedLease struct {
 	owner      string
 	timeout    time.Time
 	checkpoint string
+	claim      string
 }
 
 // fakeCheckpointer answers ListActiveWorkers from the shard map it is given and
@@ -186,6 +187,7 @@ func (f *fakeCheckpointer) FetchCheckpoint(s *par.ShardStatus) error {
 	}
 	s.SetLeaseOwner(row.owner)
 	s.SetLeaseTimeout(row.timeout)
+	s.SetClaimRequest(row.claim)
 	if row.checkpoint == "" {
 		return chk.ErrSequenceIDNotFound
 	}
@@ -280,4 +282,30 @@ func TestRebalance_ClosedShardsDoNotCountAsUnallocated(t *testing.T) {
 
 	require.NoError(t, w.rebalance())
 	assert.Len(t, cp.claims, 1)
+}
+
+// releasedClaimedShard is a store holding s1, just released by its owner (no
+// owner, lease timeout now) and claimed by claimer, so the claim is live.
+func releasedClaimedShard(claimer string) map[string]*storedLease {
+	return map[string]*storedLease{"s1": {timeout: time.Now(), checkpoint: "seq-s1", claim: claimer}}
+}
+
+// With lease stealing on, a shard another worker has claimed is left to that
+// worker during the claim window, even once its owner has released it.
+func TestAcquireLeases_LeavesAShardClaimedByAnotherWorkerToTheClaimer(t *testing.T) {
+	cfg := config.NewKinesisClientLibConfig("app", "stream", "us-east-1", "worker-1").WithLeaseStealing(true)
+	w, cp := newAcquireWorker(cfg, []string{"s1"}, nil, false)
+	cp.store = releasedClaimedShard("worker-3")
+
+	assert.Empty(t, w.acquireLeases())
+	assert.Empty(t, cp.leased)
+}
+
+func TestAcquireLeases_ClaimerTakesTheShardItClaimed(t *testing.T) {
+	cfg := config.NewKinesisClientLibConfig("app", "stream", "us-east-1", "worker-1").WithLeaseStealing(true)
+	w, cp := newAcquireWorker(cfg, []string{"s1"}, nil, false)
+	cp.store = releasedClaimedShard("worker-1")
+
+	assert.Len(t, w.acquireLeases(), 1)
+	assert.Equal(t, []string{"s1"}, cp.leased)
 }

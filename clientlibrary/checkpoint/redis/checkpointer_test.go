@@ -676,3 +676,57 @@ func TestFetchCheckpoint_KeepsOwnLease(t *testing.T) {
 	require.NoError(t, cp.FetchCheckpoint(shard))
 	assert.Equal(t, "worker-1", shard.GetLeaseOwner())
 }
+
+// The in-memory ClaimRequest follows the hash through a whole steal. The mock
+// scripter doesn't run Lua, so each step also applies the script's effect on
+// the hash by hand: the edits below mirror claimShardScript (HSET ClaimRequest)
+// and getLeaseScript (HDEL ClaimRequest). This covers the Go side only; if a
+// script stopped setting or removing ClaimRequest, this test would still pass.
+func TestClaimRequestInMemoryFollowsASteal(t *testing.T) {
+	mock := newMockRedisClient()
+	scripter := newMockScripter()
+	cp := newTestCheckpointer(mock, scripter) // worker-1 is the claimer
+	key := cp.shardKey("shard-001")
+	mock.data[key] = map[string]string{
+		chk.SequenceNumberKey: "seq-100",
+		chk.LeaseOwnerKey:     "owner",
+		chk.LeaseTimeoutKey:   time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
+	}
+	shard := newShard("shard-001")
+
+	require.NoError(t, cp.FetchCheckpoint(shard))
+	assert.Equal(t, "", shard.GetClaimRequest(), "fetch: no claim yet")
+
+	scripter.setResult(cp.claimShardScript, "OK", nil)
+	require.NoError(t, cp.ClaimShard(shard, "worker-1"))
+	mock.data[key][chk.ClaimRequestKey] = "worker-1" // what claimShardScript writes
+	assert.Equal(t, "worker-1", shard.GetClaimRequest(), "claim: set on success")
+
+	require.NoError(t, cp.FetchCheckpoint(shard))
+	assert.Equal(t, "worker-1", shard.GetClaimRequest(), "fetch: read from the hash")
+
+	scripter.setResult(cp.getLeaseScript, "OK", nil)
+	require.NoError(t, cp.GetLease(shard, "worker-1"))
+	mock.data[key][chk.LeaseOwnerKey] = "worker-1" // what getLeaseScript writes
+	delete(mock.data[key], chk.ClaimRequestKey)    // and removes
+	assert.Equal(t, "", shard.GetClaimRequest(), "lease: cleared once the steal is complete")
+
+	require.NoError(t, cp.FetchCheckpoint(shard))
+	assert.Equal(t, "", shard.GetClaimRequest(), "fetch: the hash has no claim any more")
+}
+
+func TestClaimShard_ConditionalFailLeavesNoClaimInMemory(t *testing.T) {
+	mock := newMockRedisClient()
+	scripter := newMockScripter()
+	cp := newTestCheckpointer(mock, scripter)
+	mock.data[cp.shardKey("shard-001")] = map[string]string{
+		chk.SequenceNumberKey: "seq-100",
+		chk.LeaseOwnerKey:     "owner",
+		chk.LeaseTimeoutKey:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	scripter.setResult(cp.claimShardScript, "CONDITIONAL_CHECK_FAILED:already claimed", nil)
+
+	shard := newShard("shard-001")
+	require.Error(t, cp.ClaimShard(shard, "worker-1"))
+	assert.Equal(t, "", shard.GetClaimRequest())
+}

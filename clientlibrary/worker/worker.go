@@ -350,10 +350,10 @@ func (w *Worker) acquireLeases() []*par.ShardStatus {
 		}
 
 		var stealShard bool
-		if w.kclConfig.EnableLeaseStealing && shard.ClaimRequest != "" {
+		if w.kclConfig.EnableLeaseStealing && shard.GetClaimRequest() != "" {
 			upcomingStealingInterval := time.Now().UTC().Add(time.Duration(w.kclConfig.LeaseStealingIntervalMillis) * time.Millisecond)
 			if shard.GetLeaseTimeout().Before(upcomingStealingInterval) && !shard.IsClaimRequestExpired(w.kclConfig) {
-				if shard.ClaimRequest == w.workerID {
+				if shard.GetClaimRequest() == w.workerID {
 					stealShard = true
 					log.Debugf("Stealing shard: %s", shard.ID)
 				} else {
@@ -461,7 +461,7 @@ func (w *Worker) rebalance() error {
 			return err
 		}
 		for _, shard := range w.shardStatus {
-			if shard.ClaimRequest != "" && shard.ClaimRequest == w.workerID {
+			if claim := shard.GetClaimRequest(); claim != "" && claim == w.workerID {
 				log.Debugf("Steal in progress. workerID: %s", w.workerID)
 				return nil
 			}

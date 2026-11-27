@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-11-27
+
+### Fixed
+
+- The in-memory `ShardStatus.ClaimRequest` now follows the lease row ([#25](https://github.com/ODudek/go-kcl/issues/25)). Nothing set it before: `FetchCheckpoint` didn't read it and `ClaimShard` didn't record it, so the worker never saw a pending claim, neither its own nor another worker's. Now:
+  - `FetchCheckpoint` (DynamoDB and Redis) reads `ClaimRequest` into the shard, and clears it when the row has none, so a checkpoint, an expired claim or a completed steal doesn't leave a stale value behind;
+  - `ClaimShard` (both) sets it on the shard after a successful claim;
+  - `GetLease` (both) clears it after a successful lease, since the row loses `ClaimRequest` then and `acquireLeases` doesn't fetch shards this worker owns.
+
+  `ShardStatus` gets `GetClaimRequest` / `SetClaimRequest`, and the worker reads the claim through them.
+- With lease stealing enabled, `acquireLeases` no longer tries to lease a shard another worker has a live claim on, and no longer logs that attempt as an error. `GetLease` already refused it with `ErrShardClaimed`, so nothing changes in the lease table; but `acquireLeases` never saw the claim, made a read and a conditional write that were bound to fail, and logged `Cannot get lease` at error level on every iteration (`ErrShardClaimed` isn't an `ErrLeaseNotAcquired`). It now skips the shard, which is the steal path `acquireLeases` was written for. The `rebalance()` steal guard also starts to see this worker's own claims, so it places new claims somewhat less often until the claiming side is reworked (#25).
+- `TestRandomNum` no longer fails about 2% of the time. It used the current second as the string length, so at second 0 both strings were empty and at second 1 one-letter strings often matched; it now uses a fixed length of 32.
+
 ## [0.6.4] - 2026-11-27
 
 ### Fixed
