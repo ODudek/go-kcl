@@ -233,9 +233,14 @@ func (checkpointer *DynamoCheckpoint) GetLease(shard *par.ShardStatus, newAssign
 		return err
 	}
 
+	// The lease item written above has no ClaimRequest, so a claim this lease
+	// completed (or overrode after it expired) is gone from the table; clear it
+	// in memory too. acquireLeases does not fetch shards this worker owns, so
+	// nothing else would.
 	shard.Mux.Lock()
 	shard.AssignedTo = newAssignTo
 	shard.LeaseTimeout = newLeaseTimeout
+	shard.ClaimRequest = ""
 	shard.Mux.Unlock()
 
 	return nil
@@ -301,6 +306,14 @@ func (checkpointer *DynamoCheckpoint) FetchCheckpoint(shard *par.ShardStatus) er
 	if assignedTo, ok := checkpoint[chk.LeaseOwnerKey]; ok {
 		shard.SetLeaseOwner(assignedTo.(*types.AttributeValueMemberS).Value)
 	}
+
+	// The claim is read (or cleared) on every fetch: a checkpoint, an expired
+	// claim or a completed steal must not leave a stale claim in memory.
+	claimRequest := ""
+	if claim, ok := checkpoint[chk.ClaimRequestKey].(*types.AttributeValueMemberS); ok {
+		claimRequest = claim.Value
+	}
+	shard.SetClaimRequest(claimRequest)
 
 	// Use up-to-date leaseTimeout to avoid ConditionalCheckFailedException when claiming
 	if leaseTimeout, ok := checkpoint[chk.LeaseTimeoutKey]; ok && leaseTimeout.(*types.AttributeValueMemberS).Value != "" {
@@ -477,7 +490,11 @@ func (checkpointer *DynamoCheckpoint) ClaimShard(shard *par.ShardStatus, claimID
 		expressionAttributeValues[":parent_shard"] = &types.AttributeValueMemberS{Value: shard.ParentShardId}
 	}
 
-	return checkpointer.conditionalUpdate(conditionalExpression, expressionAttributeValues, marshalledCheckpoint)
+	if err := checkpointer.conditionalUpdate(conditionalExpression, expressionAttributeValues, marshalledCheckpoint); err != nil {
+		return err
+	}
+	shard.SetClaimRequest(claimID)
+	return nil
 }
 
 func (checkpointer *DynamoCheckpoint) syncLeases(shardStatus map[string]*par.ShardStatus) error {

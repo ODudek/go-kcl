@@ -86,6 +86,22 @@ func (ss *ShardStatus) SetLeaseTimeout(timeout time.Time) {
 	ss.LeaseTimeout = timeout
 }
 
+// GetClaimRequest returns the worker that has claimed this shard for lease
+// stealing, as last read from or written to the checkpointer, or "" when there
+// is no claim.
+func (ss *ShardStatus) GetClaimRequest() string {
+	ss.Mux.RLock()
+	defer ss.Mux.RUnlock()
+	return ss.ClaimRequest
+}
+
+// SetClaimRequest records the worker that has claimed this shard ("" for none).
+func (ss *ShardStatus) SetClaimRequest(claimID string) {
+	ss.Mux.Lock()
+	defer ss.Mux.Unlock()
+	ss.ClaimRequest = claimID
+}
+
 func (ss *ShardStatus) IsClaimRequestExpired(kclConfig *config.KinesisClientLibConfiguration) bool {
 	if leaseTimeout := ss.GetLeaseTimeout(); leaseTimeout.IsZero() {
 		return false

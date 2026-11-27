@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5] - 2026-11-27
+
+### Fixed
+
+- The in-memory `ShardStatus.ClaimRequest` now follows the lease row ([#25](https://github.com/ODudek/go-kcl/issues/25)). Nothing set it before: `FetchCheckpoint` didn't read it and `ClaimShard` didn't record it, so the worker never saw a pending claim, neither its own nor another worker's. Now:
+  - `FetchCheckpoint` (DynamoDB and Redis) reads `ClaimRequest` into the shard, and clears it when the row has none, so a checkpoint, an expired claim or a completed steal doesn't leave a stale value behind;
+  - `ClaimShard` (both) sets it on the shard after a successful claim;
+  - `GetLease` (both) clears it after a successful lease, since the row loses `ClaimRequest` then and `acquireLeases` doesn't fetch shards this worker owns.
+
+  `ShardStatus` gets `GetClaimRequest` / `SetClaimRequest`, and the worker reads the claim through them.
+
+### Changed
+
+- **Behaviour change:** with lease stealing enabled, other workers now leave a claimed shard to the claiming worker during the claim window, even once its owner has released it, and the claiming worker takes it first. This is the intended steal path in `acquireLeases`, which never ran before because the claim was never in memory. The `rebalance()` steal guard also starts to see this worker's own claims, so it places new claims somewhat less often until the claiming side is reworked (#25).
+
 ## [0.6.4] - 2026-11-27
 
 ### Fixed

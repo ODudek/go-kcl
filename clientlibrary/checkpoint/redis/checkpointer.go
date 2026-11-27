@@ -199,9 +199,14 @@ func (c *RedisCheckpoint) GetLease(shard *par.ShardStatus, newAssignTo string) e
 
 	switch {
 	case resultStr == "OK":
+		// The script removes ClaimRequest from the hash on a successful lease,
+		// so a claim this lease completed (or overrode after it expired) is
+		// gone; clear it in memory too. acquireLeases does not fetch shards
+		// this worker owns, so nothing else would.
 		shard.Mux.Lock()
 		shard.AssignedTo = newAssignTo
 		shard.LeaseTimeout = newLeaseTimeout
+		shard.ClaimRequest = ""
 		shard.Mux.Unlock()
 		return nil
 	case resultStr == "SHARD_CLAIMED":
@@ -250,6 +255,10 @@ func (c *RedisCheckpoint) FetchCheckpoint(shard *par.ShardStatus) error {
 	// The lease is read before the checkpoint: a shard another worker has just
 	// leased has an owner but no checkpoint yet, and must not look free here.
 	c.syncLeaseOwner(shard, data[chk.LeaseOwnerKey])
+
+	// The claim is read (or cleared) on every fetch: an expired claim or a
+	// completed steal must not leave a stale claim in memory.
+	shard.SetClaimRequest(data[chk.ClaimRequestKey])
 
 	if leaseTimeout, ok := data[chk.LeaseTimeoutKey]; ok && leaseTimeout != "" {
 		t, err := time.Parse(time.RFC3339Nano, leaseTimeout)
@@ -384,6 +393,7 @@ func (c *RedisCheckpoint) ClaimShard(shard *par.ShardStatus, claimID string) err
 		return chk.ErrLeaseNotAcquired{Cause: reason}
 	}
 
+	shard.SetClaimRequest(claimID)
 	return nil
 }
 
